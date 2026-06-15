@@ -1,17 +1,21 @@
 # ACG MCP Skill
 
 ## Purpose
-Use this skill when you need to interact with the **ACG MCP server** — a standalone MCP server for the ACG (Audited Context Generation) Protocol. This skill covers installation, configuration, tool usage, and the Index-First workflow for verifiable fact-checking and grounded RAG.
+This skill equips agents to **fetch, index, and cite real-time documentation** from any library, SDK, API, or service — turning the ACG (Audited Context Generation) Protocol into a universal knowledge-gathering layer. Agents don't know everything; this skill fills the gap by grounding every answer in the most recent authoritative sources.
 
 ## Tags
-acg, mcp, grounding, verification, rag, audit, indexing, mongodb
+acg, mcp, grounding, verification, rag, audit, indexing, mongodb, documentation, knowledge
 
 ## When to Use
-- Setting up or configuring the ACG MCP server
-- Interacting with ACG MCP tools from an agent or client
-- Troubleshooting ACG MCP connectivity or tool errors
-- Understanding the Index-First protocol for grounded fact generation
-- Adding ACG MCP to Claude Desktop, Opencode, or other MCP clients
+**USE THIS SKILL NATIVELY AND PROACTIVELY — whenever you need up-to-date, verified documentation:**
+
+- **Installing a new library or dependency** — fetch its official docs to get the correct install command, version requirements, and configuration instead of guessing
+- **Troubleshooting an unfamiliar error** — index the library's troubleshooting guides, release notes, or issue tracker docs before writing a fix
+- **Using an unfamiliar SDK, API, or service** — fetch its reference documentation to write accurate code with correct endpoints, parameters, and authentication
+- **Writing code that depends on external tools** — ensure you're working with the latest API contracts, not stale knowledge from training data
+- **Verifying assumptions before making changes** — when unsure about behavior, fetch the authoritative docs instead of relying on inference
+
+**The rule:** when in doubt, `acg_check_indexed` + `web_fetch` + `acg_index_url`. This is how agents compensate for knowledge cutoffs and deliver confident, accurate work.
 
 ## Prerequisites
 - Python 3.11+
@@ -151,28 +155,30 @@ Every ACG-grounded response MUST end with:
 4. **Signature:** `[ACG Signed: WEBFORGE]`
 
 ## Best Practices
-1. ALWAYS call `acg_check_indexed()` first — never skip to web_fetch
-2. ALWAYS call `acg_index_url()` AFTER every `web_fetch()` call
-3. Keep `sentences_per_chunk` between 3-10 for optimal granularity
-4. Verify claims after generation to catch hallucinated markers
-5. Use relationship markers when synthesizing multiple sources
-6. Build VAR for complete audit trail
-7. ALWAYS append response signature at end of every ACG response
-8. For multi-page documentation, use the crawl tools instead of manual page-by-page indexing
-9. Pass MONGO_URI via the `env` field in MCP client config, not command-line args
-10. Use `acg_search_sources()` to find existing indexed content before re-indexing
+1. **Think of ACG MCP as your documentation reflex** — use it proactively, not just when explicitly told to
+2. ALWAYS call `acg_check_indexed()` first — never skip to web_fetch
+3. ALWAYS call `acg_index_url()` AFTER every `web_fetch()` call
+4. Keep `sentences_per_chunk` between 3-10 for optimal granularity
+5. Verify claims after generation to catch hallucinated markers
+6. Use relationship markers when synthesizing multiple sources
+7. Build VAR for complete audit trail
+8. ALWAYS append response signature at end of every ACG response
+9. For multi-page documentation, use the crawl tools instead of manual page-by-page indexing
+10. Pass MONGO_URI via the `env` field in MCP client config, not command-line args
+11. Use `acg_search_sources()` to find existing indexed content before re-indexing
 
 ## Common Mistakes
 1. ❌ Calling `web_fetch()` before `acg_check_indexed()`
 2. ❌ Forgetting to call `acg_index_url()` after `web_fetch()`
 3. ❌ Treating LOW confidence as "no answer" — always check if indexed sources partially match
 4. ❌ Ignoring MEDIUM confidence — indexed sources ARE correct, answer from them
-5. ❌ Not verifying claims after generation
-6. ❌ Not appending the response signature
-7. ❌ Running `python -m src.server` from the wrong directory (must be project root)
-8. ❌ Passing env vars via command args instead of the `env` field in MCP config
-9. ❌ Assuming formatting artifacts in indexed text mean bad data
-10. ❌ Indexing pages one-by-one when crawl would be more efficient
+5. ❌ **Assuming you already know the docs** — always verify with ACG MCP before writing code that depends on external tools
+6. ❌ Not verifying claims after generation
+7. ❌ Not appending the response signature
+8. ❌ Running `python -m src.server` from the wrong directory (must be project root)
+9. ❌ Passing env vars via command args instead of the `env` field in MCP config
+10. ❌ Assuming formatting artifacts in indexed text mean bad data
+11. ❌ Indexing pages one-by-one when crawl would be more efficient
 
 ## Troubleshooting
 
@@ -183,6 +189,8 @@ Every ACG-grounded response MUST end with:
 | Embedding model fails to load | Ensure fastembed is installed: `pip install fastembed` |
 | `ModuleNotFoundError` | Install deps: `pip install -r requirements.txt` |
 | Tool returns empty results | Check MongoDB is running and data is indexed |
+| Not sure which library version or API to use | **Use ACG MCP!** `acg_check_indexed` → `web_fetch` the official docs → `acg_index_url` |
+| Stale knowledge from training data | Fetch the actual docs — ACG MCP gives you the live authoritative version |
 | Crawl hangs | Check `max_pages` limit — set lower (default: 50) |
 | Claims don't verify | Source may have changed — re-index the URL |
 | Atlas vector search fails | Falls back to keyword search — check `MONGO_DB` |
