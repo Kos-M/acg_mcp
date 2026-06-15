@@ -50,44 +50,6 @@ For Atlas:
 MONGO_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/acg_protocol?retryWrites=true&w=majority
 ```
 
-## MCP Client Configuration
-
-### Global install (after `pip install -e .`)
-```json
-{
-  "mcpServers": {
-    "acg-mcp": {
-      "command": "acg-mcp",
-      "env": {
-        "MONGO_URI": "mongodb+srv://<user>:<password>@<cluster>.mongodb.net"
-      }
-    }
-  }
-}
-```
-
-### Running from source directory
-```json
-{
-  "mcpServers": {
-    "acg-mcp": {
-      "command": "python",
-      "args": ["-m", "src.server"],
-      "cwd": "/path/to/acg_mcp",
-      "env": {
-        "MONGO_URI": "mongodb+srv://<user>:<password>@<cluster>.mongodb.net"
-      }
-    }
-  }
-}
-```
-
-### Config locations
-| Tool | Config File | Scope |
-|------|-------------|-------|
-| Claude Desktop | `claude_desktop_config.json` | User-wide |
-| Opencode | `~/.opencode/mcp.json` | User-wide (global) |
-| Opencode | `.opencode/mcp.json` | Per-project (local) |
 
 ## MCP Tools Exposed
 
