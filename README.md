@@ -77,7 +77,11 @@ acg-mcp
 
 ### Connect from an MCP client
 
-The server communicates over **stdio**. Example Claude Desktop config:
+The server communicates over **stdio**.
+
+#### Claude Desktop
+
+Add to your `claude_desktop_config.json`:
 
 ```json
 {
@@ -91,6 +95,42 @@ The server communicates over **stdio**. Example Claude Desktop config:
     }
   }
 }
+```
+
+#### Opencode
+
+Add to your `~/.opencode/mcp.json` (or project-local `.opencode/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "acg-mcp": {
+      "command": "python",
+      "args": ["-m", "src.server"],
+      "env": {
+        "MONGO_URI": "mongodb+srv://..."
+      }
+    }
+  }
+}
+```
+
+If you have the package installed, you can use the CLI directly:
+
+```json
+{
+  "mcpServers": {
+    "acg-mcp": {
+      "command": "acg-mcp",
+      "env": {
+        "MONGO_URI": "mongodb+srv://..."
+      }
+    }
+  }
+}
+```
+
+> **Tip:** Opencode supports the same `mcpServers` JSON format as Claude Desktop. Place the config in `~/.opencode/mcp.json` for global access, or in `.opencode/mcp.json` at your project root for per-project configuration.
 ```
 
 ## Available Tools
