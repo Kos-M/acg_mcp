@@ -6,6 +6,7 @@ Standalone MCP server for the ACG (Audited Context Generation) Protocol.
 ```
 ├── AGENTS.md
 ├── README.md
+├── SKILL.md          # Agent skill file (standard format for WEBFORGE integration)
 ├── pyproject.toml
 ├── requirements.txt
 ├── .env.sample

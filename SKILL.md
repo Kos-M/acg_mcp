@@ -190,5 +190,5 @@ Every ACG-grounded response MUST end with:
 | Permission denied | Install with `--user` flag: `pip install --user -e .` |
 
 ## Reference
-- [ACG Protocol Skill](../../../.agents/skills/acg-protocol/SKILL.md) — protocol details (UGVP, RSVP, VAR)
+- [ACG Protocol Skill](https://github.com/Kos-M/webforge/blob/main/.agents/skills/acg-protocol/SKILL.md) — protocol details (UGVP, RSVP, VAR)
 - [Project Source](https://github.com/Kos-M/acg_mcp) — main repository
