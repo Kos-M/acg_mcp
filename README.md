@@ -21,23 +21,40 @@ ACG provides a dual-layer standard for veracity assurance:
 
 ## Requirements
 
-- Python 3.12+
+- Python 3.11+
 - MongoDB instance (local or Atlas)
   - Atlas Vector Search is **optional** — falls back to keyword search if no embedding model
 
 ## Installation
+
+There are two ways to install — choose based on your use case:
+
+### Option A: Local development (editable install)
+
+For local development where you'll edit the code, install in editable mode:
 
 ```bash
 # Clone the repo
 git clone https://github.com/Kos-M/acg_mcp.git
 cd acg_mcp
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Install globally in editable mode (recommended for agents/CLI usage)
+pip install -e .
 
-# Install dependencies
+# Or use a venv:
+# python -m venv venv && source venv/bin/activate && pip install -e .
+```
+
+This makes the `acg-mcp` command available **system-wide** (or venv-wide), so you can
+run it from any directory.
+
+### Option B: Using the source directly
+
+```bash
+git clone https://github.com/Kos-M/acg_mcp.git
+cd acg_mcp
 pip install -r requirements.txt
+# Then run with: python -m src.server
 ```
 
 ## Configuration
@@ -62,60 +79,29 @@ MONGO_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/acg_protocol?ret
 
 ## Usage
 
-### Start the MCP server (stdio transport)
+### Run the MCP server (stdio transport)
 
+**After editable install (recommended for global use):**
 ```bash
-python -m src.server
+# Works from ANY directory — no venv activation needed if installed system-wide
+acg-mcp
 ```
 
-Or use the installed CLI:
-
+**Without installing the CLI (source directory only):**
 ```bash
-pip install -e .
-acg-mcp
+cd /path/to/acg_mcp
+python -m src.server
 ```
 
 ### Connect from an MCP client
 
-The server communicates over **stdio**.
+The server communicates over **stdio**. These examples work for both
+Claude Desktop and Opencode (same `mcpServers` JSON format).
 
-#### Claude Desktop
+#### Global install (recommended for agents & tools)
 
-Add to your `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "acg-mcp": {
-      "command": "python",
-      "args": ["-m", "src.server"],
-      "env": {
-        "MONGO_URI": "mongodb+srv://..."
-      }
-    }
-  }
-}
-```
-
-#### Opencode
-
-Add to your `~/.opencode/mcp.json` (or project-local `.opencode/mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "acg-mcp": {
-      "command": "python",
-      "args": ["-m", "src.server"],
-      "env": {
-        "MONGO_URI": "mongodb+srv://..."
-      }
-    }
-  }
-}
-```
-
-If you have the package installed, you can use the CLI directly:
+After `pip install -e .`, the `acg-mcp` command is available globally.
+Use it directly in your MCP config — no path needed:
 
 ```json
 {
@@ -130,8 +116,67 @@ If you have the package installed, you can use the CLI directly:
 }
 ```
 
-> **Tip:** Opencode supports the same `mcpServers` JSON format as Claude Desktop. Place the config in `~/.opencode/mcp.json` for global access, or in `.opencode/mcp.json` at your project root for per-project configuration.
+#### Running from source directory
+
+If you haven't installed the CLI, use the full path:
+
+```json
+{
+  "mcpServers": {
+    "acg-mcp": {
+      "command": "python",
+      "args": ["-m", "src.server"],
+      "env": {
+        "MONGO_URI": "mongodb+srv://..."
+      }
+    }
+  }
+}
 ```
+
+> **Important:** When using `python -m src.server`, run the MCP client from
+> the project root (`/path/to/acg_mcp`) or set `cwd` in the MCP config.
+
+### Config locations
+
+| Tool | Config File | Scope |
+|------|-------------|-------|
+| Claude Desktop | `claude_desktop_config.json` | User-wide |
+| Opencode | `~/.opencode/mcp.json` | User-wide (global) |
+| Opencode | `.opencode/mcp.json` | Per-project (local) |
+
+## Usage from other tools & agents
+
+Once installed globally with `pip install -e .`, any tool or agent on the
+machine can use acg-mcp by referencing it in their MCP configuration.
+
+### Example: WEBFORGE agent setup
+
+Add to your agent's MCP config (e.g., `~/.opencode/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "acg-mcp": {
+      "command": "acg-mcp",
+      "env": {
+        "MONGO_URI": "mongodb://localhost:27017"
+      }
+    }
+  }
+}
+```
+
+The agent can then call ACG tools directly:
+- `acg_check_indexed()` — Check if answers exist in indexed sources
+- `acg_index_url()` — Index new URLs
+- `acg_verify_claims()` — Verify grounded text claims
+- `acg_search_sources()` — Search indexed knowledge base
+
+### Passing environment variables
+
+Pass `MONGO_URI` and other config via the `env` field in the MCP config.
+The server also loads `.env` from the project directory if present.
 
 ## Available Tools
 
