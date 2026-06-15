@@ -1,0 +1,26 @@
+[project]
+name = "acg-mcp"
+version = "0.1.0"
+description = "Standalone MCP server for the ACG (Audited Context Generation) Protocol — verifiable fact-checking and grounded RAG via MongoDB"
+authors = [{name = "Kos-M"}]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = [
+    "mcp>=1.16.0",
+    "pymongo>=4.15.0",
+    "requests>=2.32.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    "fastembed>=0.6.0",
+    "html2text>=2024.0.0",
+    "python-dotenv>=1.1.0",
+]
+
+[project.scripts]
+acg-mcp = "src.server:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

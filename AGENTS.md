@@ -1,0 +1,51 @@
+# ACG MCP
+
+Standalone MCP server for the ACG (Audited Context Generation) Protocol.
+
+## Directory Structure
+```
+├── AGENTS.md
+├── README.md
+├── pyproject.toml
+├── requirements.txt
+├── .env.sample
+├── .gitignore
+├── src/
+│   ├── __init__.py
+│   ├── server.py          # FastMCP server entry point
+│   ├── config.py          # MongoDB env var config
+│   ├── acg/               # Core ACG protocol library (ported from webforge)
+│   │   ├── __init__.py
+│   │   ├── shi.py         # Source Hash Identity
+│   │   ├── ugvp.py        # Claim Markers (Layer 1)
+│   │   ├── rsvp.py        # Relationship Markers (Layer 2)
+│   │   ├── var.py         # Veracity Audit Registry
+│   │   ├── db.py          # MongoDB CRUD operations
+│   │   ├── indexer.py     # URL fetching, text extraction, chunking, embedding
+│   │   ├── verifier.py    # Claim verification with fuzzy matching
+│   │   └── spider.py      # BFS URL crawler
+│   └── tools/             # MCP tool registrations
+│       ├── __init__.py
+│       ├── indexer_tools.py
+│       ├── verifier_tools.py
+│       └── spider_tools.py
+├── tests/
+│   └── __init__.py
+└── .github/
+    └── workflows/
+        └── test.yml
+```
+
+## Stack
+Python 3.12+, MCP Python SDK, pymongo, requests, beautifulsoup4, lxml, fastembed
+
+## Commands
+- Run: `python -m src.server` or `acg-mcp`
+- Test: `pytest tests/ -v`
+- Install: `pip install -r requirements.txt`
+- Dev install: `pip install -e .`
+
+## Env
+- `MONGO_URI`: MongoDB connection string (required)
+- `MONGO_DB`: Database name (default: acg_protocol)
+- `EMBEDDING_CACHE_DIR`: Optional cache directory for embedding model
