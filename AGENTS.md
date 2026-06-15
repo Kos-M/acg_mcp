@@ -40,10 +40,11 @@ Standalone MCP server for the ACG (Audited Context Generation) Protocol.
 Python 3.12+, MCP Python SDK, pymongo, requests, beautifulsoup4, lxml, fastembed
 
 ## Commands
-- Run: `python -m src.server` or `acg-mcp`
+- Run (global CLI): `acg-mcp` (after `pip install -e .`)
+- Run (source): `python -m src.server` (from project root only)
+- Install (global editable): `pip install -e .`
+- Install (deps only): `pip install -r requirements.txt`
 - Test: `pytest tests/ -v`
-- Install: `pip install -r requirements.txt`
-- Dev install: `pip install -e .`
 
 ## Env
 - `MONGO_URI`: MongoDB connection string (required)
