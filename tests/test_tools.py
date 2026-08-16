@@ -203,8 +203,9 @@ class TestServerRegistration:
                 "acg_list_sources", "acg_count_sources", "acg_reset_database",
                 "acg_generate_grounded_text", "acg_verify_claims", "acg_build_var",
                 "acg_crawl_and_index", "acg_crawl_status", "acg_crawl_list_tasks",
+                "acg_run_workflow",
             }
             assert names == expected, f"Missing tools: {expected - names}"
-            assert len(tools) == 12
+            assert len(tools) == 13
 
         asyncio.run(check())
