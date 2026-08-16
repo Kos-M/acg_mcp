@@ -8,8 +8,45 @@ ACG provides a dual-layer standard for veracity assurance:
 - **UGVP (Layer 1)**: Atomic fact grounding with Claim Markers and Source Hash Identity (SHI)
 - **RSVP (Layer 2)**: Logical synthesis verification with Relationship Markers
 
+## Why ACG — what you can do with it
+
+LLMs confidently state things that are wrong, and there is usually **no way to
+check** — the answer is a black box with no provenance. ACG fixes this by making
+every answer **auditable by construction**:
+
+- **Ground every fact to its source.** Index a URL once and every later answer
+  built from it carries inline Claim Markers like
+  `[C1:9f7a2c4d8e1b:css=#acg-chunk-aa-0]` — the SHA-256-based SHI prefix
+  fingerprints the exact source document, and the CSS selector points to the
+  precise chunk inside it.
+
+- **Verify instead of trust.** `acg_verify_claims` re-fetches every source and
+  fuzzy-matches each claim against the actual text, so verification is not a
+  self-reported LLM opinion — it is an independent, repeatable check. A claim
+  either exists in the cited source or it fails.
+
+- **Know when the knowledge base is enough.** `acg_check_indexed` returns a
+  confidence score (HIGH / MEDIUM / LOW) before you ever hit the network, so
+  you only fetch new pages when the index genuinely can't answer.
+
+- **Get a machine-readable audit trail.** `acg_build_var` emits a Veracity
+  Audit Registry (SSR + RAR entries) — a JSON record of every claim, its
+  source fingerprint, and every logical relationship between claims, ready to
+  be consumed by downstream systems or humans.
+
+- **Use it in two modes.** Run the **enforced workflow** (`acg_run_workflow`)
+  and get a complete, verified, audited answer in one call — or compose the
+  individual tools any way your own workflow requires (see
+  [Two ways to use ACG](#two-ways-to-use-acg)).
+
+In short: ACG turns "trust me, the model said so" into
+**"here is the claim, here is the exact source location, here is the
+verification result, and here is the audit record."**
+
 ## Features
 
+- **Enforced workflow** → One call runs the whole pipeline: search, auto-index,
+  ground, verify, audit (see [Two ways to use ACG](#two-ways-to-use-acg))
 - **Index URLs** → Extract text, chunk by sentences, generate embeddings, store in MongoDB
 - **Search Sources** → Semantic (vector) + keyword search across indexed content
 - **Check Indexed** → Confidence-scored lookup to avoid unnecessary web_fetch calls
@@ -113,6 +150,18 @@ acg-mcp
 ```bash
 cd /path/to/acg_mcp
 python -m src.server
+```
+
+### Run the enforced workflow from the CLI
+
+The one-shot CLI runs the entire audited pipeline without an MCP client:
+
+```bash
+# Query the index, print the grounded answer + audit footer
+acg-mcp --workflow "What does the README say about MONGO_URI?"
+
+# Same, but auto-index a URL first when confidence is LOW
+acg-mcp --workflow "How do I configure MongoDB Atlas?" https://example.com/docs/setup
 ```
 
 ### Connect from an MCP client
@@ -243,15 +292,74 @@ Opencode — note `cwd` so `src.server` resolves relative to the project:
 | Opencode | `~/.config/opencode/opencode.json` | User-wide (global) |
 | Opencode | `opencode.json` / `opencode.jsonc` (project root) | Per-project (local) |
 
+## Two ways to use ACG
+
+ACG ships **both** an enforced end-to-end workflow and the individual tools
+it is built from. Use whichever fits your task.
+
+### 1. Enforced workflow — the whole protocol in one call
+
+Call `acg_run_workflow(query, url="")` and the server runs the full
+pipeline for you, in this order:
+
+1. **search** — search the indexed sources for the query
+2. **index** — if confidence is LOW and a `url` was provided, index it
+   first, then re-search (auto-fetch)
+3. **ground** — compose a grounded answer with inline UGVP Claim Markers
+4. **verify** — re-fetch every cited source and fuzzy-match each claim
+5. **audit** — build the Veracity Audit Registry (SSR + RAR)
+
+The single returned report contains everything: the grounded answer,
+per-claim verification results, a **Chunk Signatures Table**, and the
+audit footer — `[Claims Verified: x/y]`, `[ACG Accuracy: N%]`,
+`[ACG Signed: ACG Protocol]`. You get a verifiable answer without
+orchestrating any of the steps yourself.
+
+```jsonc
+// acg_run_workflow("What is the pricing of the flash model?")
+{
+  "query": "What is the pricing of the flash model?",
+  "workflow": ["search", "ground", "verify", "audit"],
+  "confidence_tier": "HIGH",
+  "grounded_answer": "Flash input tokens cost $0.14 per 1M [C1:9f7a2c4d8e1b:css=#acg-chunk-aa-0].",
+  "claims_verified": "1/1",
+  "acg_accuracy": 100.0,
+  "acg_signed": "ACG Protocol",
+  "var": { "protocol": "ACG/1.0", "ssr_entries": [ /* ... */ ], "rar_entries": [] }
+}
+```
+
+### 2. Individual tools — adapt ACG to your own workflow
+
+Every step is also available as a standalone tool, so you can compose
+exactly the pipeline your workflow needs — different chunking, custom
+verification thresholds, your own retrieval strategy, or ACG used purely
+as a post-generation audit layer.
+
+| Tool | When to use it |
+|------|----------------|
+| `acg_index_url` | You have a URL and want it in the knowledge base |
+| `acg_check_indexed` | You want to know if the index can answer before fetching anything |
+| `acg_search_sources` | You want raw matching chunks with scores, to build your own answer |
+| `acg_generate_grounded_text` | You have an answer and want to attach Claim Markers to it |
+| `acg_verify_claims` | You have marked text and want an independent verification pass |
+| `acg_build_var` | You want the machine-readable audit record (SSR + RAR) |
+| `acg_crawl_and_index` | You have a docs site and want it indexed as a whole |
+
+For example, a "verify-only" workflow that audits text generated elsewhere:
+
+```text
+acg_generate_grounded_text(claim, shi_prefix, css_selector)
+    -> acg_verify_claims(grounded_text)
+    -> acg_build_var(grounded_text)
+```
+
 ## Usage from other tools & agents
 
 Once installed with **Option A** (venv) or **Option B** (system-wide), any tool or
 agent on the machine can use acg-mcp by referencing it in their MCP configuration.
-
-### Example: WEBFORGE agent setup
-
-Add to the agent's global Opencode config (`~/.config/opencode/opencode.json`)
-using Opencode's `mcp` syntax:
+Add it to the agent's global Opencode config
+(`~/.config/opencode/opencode.json`) using Opencode's `mcp` syntax:
 
 ```json
 {
@@ -270,6 +378,7 @@ using Opencode's `mcp` syntax:
 ```
 
 The agent can then call ACG tools directly:
+- `acg_run_workflow()` — One call: full verified, audited answer
 - `acg_check_indexed()` — Check if answers exist in indexed sources
 - `acg_index_url()` — Index new URLs
 - `acg_verify_claims()` — Verify grounded text claims
@@ -286,6 +395,7 @@ editable (`pip install -e .`) or run from the project root.
 
 | Tool | Description |
 |------|-------------|
+| `acg_run_workflow` | **Enforced pipeline** — search, auto-index, ground, verify, audit in one call |
 | `acg_index_url` | Index a URL for ACG — fetches, chunks, embeds, stores |
 | `acg_check_indexed` | Check if a query has results in indexed sources |
 | `acg_search_sources` | Search indexed sources by keyword |
