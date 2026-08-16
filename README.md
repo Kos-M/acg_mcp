@@ -117,14 +117,16 @@ python -m src.server
 
 ### Connect from an MCP client
 
-The server communicates over **stdio**. These examples work for both
-Claude Desktop and Opencode (same `mcpServers` JSON format).
+The server communicates over **stdio**. Claude Desktop and Opencode use
+**different** config formats, so the examples below are split per client:
+Claude Desktop uses the `mcpServers` key; Opencode uses a top-level `mcp`
+key where every server needs `"type"` and `command` is an array.
 
-#### Installed CLI (venv or system-wide)
+#### Claude Desktop
 
-After installing with **Option A** (venv) or **Option B** (system-wide), the
-`acg-mcp` command is on PATH. MCP clients don't source your shell, so if you
-used a venv, give the client the venv's absolute path:
+Claude Desktop reads `claude_desktop_config.json` and uses the `mcpServers`
+key. If you installed with **Option A** (venv), point at the venv binary —
+clients don't source your shell:
 
 ```json
 {
@@ -154,9 +156,49 @@ With a system-wide install (Option B), the bare command works directly:
 }
 ```
 
+#### Opencode
+
+Opencode reads `opencode.json` (or `opencode.jsonc`) and uses a top-level
+`mcp` key. Local servers require `"type": "local"`, `command` as an **array**
+of the binary + args, and env vars under `"environment"` (not `"env"`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "acg-mcp": {
+      "type": "local",
+      "command": ["/absolute/path/to/acg_mcp/venv/bin/acg-mcp"],
+      "enabled": true,
+      "environment": {
+        "MONGO_URI": "mongodb+srv://..."
+      }
+    }
+  }
+}
+```
+
+With a system-wide install (Option B), use the bare command:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "acg-mcp": {
+      "type": "local",
+      "command": ["acg-mcp"],
+      "enabled": true,
+      "environment": {
+        "MONGO_URI": "mongodb+srv://..."
+      }
+    }
+  }
+}
+```
+
 #### Running from source directory
 
-If you haven't installed the CLI, use the full path:
+If you haven't installed the CLI, use the full path. Claude Desktop:
 
 ```json
 {
@@ -172,6 +214,24 @@ If you haven't installed the CLI, use the full path:
 }
 ```
 
+Opencode — note `cwd` so `src.server` resolves relative to the project:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "acg-mcp": {
+      "type": "local",
+      "command": ["python", "-m", "src.server"],
+      "cwd": "/path/to/acg_mcp",
+      "environment": {
+        "MONGO_URI": "mongodb+srv://..."
+      }
+    }
+  }
+}
+```
+
 > **Important:** When using `python -m src.server`, run the MCP client from
 > the project root (`/path/to/acg_mcp`) or set `cwd` in the MCP config.
 
@@ -180,8 +240,8 @@ If you haven't installed the CLI, use the full path:
 | Tool | Config File | Scope |
 |------|-------------|-------|
 | Claude Desktop | `claude_desktop_config.json` | User-wide |
-| Opencode | `~/.opencode/mcp.json` | User-wide (global) |
-| Opencode | `.opencode/mcp.json` | Per-project (local) |
+| Opencode | `~/.config/opencode/opencode.json` | User-wide (global) |
+| Opencode | `opencode.json` / `opencode.jsonc` (project root) | Per-project (local) |
 
 ## Usage from other tools & agents
 
@@ -190,14 +250,18 @@ agent on the machine can use acg-mcp by referencing it in their MCP configuratio
 
 ### Example: WEBFORGE agent setup
 
-Add to your agent's MCP config (e.g., `~/.opencode/mcp.json`):
+Add to the agent's global Opencode config (`~/.config/opencode/opencode.json`)
+using Opencode's `mcp` syntax:
 
 ```json
 {
-  "mcpServers": {
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
     "acg-mcp": {
-      "command": "acg-mcp",
-      "env": {
+      "type": "local",
+      "command": ["acg-mcp"],
+      "enabled": true,
+      "environment": {
         "MONGO_URI": "mongodb://localhost:27017"
       }
     }
@@ -213,9 +277,10 @@ The agent can then call ACG tools directly:
 
 ### Passing environment variables
 
-Pass `MONGO_URI` and other config via the `env` field in the MCP config.
-The server also loads `.env` from the project directory (via python-dotenv)
-when installed editable (`pip install -e .`) or run from the project root.
+Pass `MONGO_URI` and other config via the `env` field (Claude Desktop) or
+`environment` field (Opencode) in the MCP config. The server also loads
+`.env` from the project directory (via python-dotenv) when installed
+editable (`pip install -e .`) or run from the project root.
 
 ## Available Tools
 
