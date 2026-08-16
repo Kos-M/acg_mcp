@@ -51,3 +51,4 @@ Python 3.12+, MCP Python SDK, pymongo, requests, beautifulsoup4, lxml, fastembed
 - `MONGO_URI`: MongoDB connection string (required)
 - `MONGO_DB`: Database name (default: acg_protocol)
 - `EMBEDDING_CACHE_DIR`: Optional cache directory for embedding model
+- `ACG_VECTOR_MAX_CANDIDATES`: Optional cap on embedded chunks scanned per vector search (default: 10000)

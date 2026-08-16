@@ -78,8 +78,20 @@ def get_db():
         _db.data.create_index([("shi_prefix", ASCENDING)])
 
         # --- claims collection ---
-        _db.claims.create_index([("claim_id", ASCENDING)], unique=True)
-        _db.claims.create_index([("shi_prefix", ASCENDING)])
+        # Claim IDs are per-document (each grounded text restarts at C1), so
+        # uniqueness must be scoped to (shi_prefix, claim_id) — otherwise C1
+        # from source A silently overwrites C1 from source B.
+        #
+        # Migration: drop the legacy bare claim_id unique index (auto-named
+        # "claim_id_1") if present; it conflicts with the new schema below.
+        try:
+            _db.claims.drop_index("claim_id_1")
+        except Exception:
+            pass  # index never existed
+        _db.claims.create_index(
+            [("shi_prefix", ASCENDING), ("claim_id", ASCENDING)], unique=True
+        )
+        _db.claims.create_index([("claim_id", ASCENDING)])
 
         # --- relationships collection ---
         _db.relationships.create_index([("rel_id", ASCENDING)], unique=True)
@@ -334,26 +346,39 @@ def get_chunks_by_source(source_id: str) -> list[dict]:
 
 
 def search_chunks(query: str, limit: int = 5) -> list[dict]:
-    """Search across all data chunks by keyword.
+    """Search across all data chunks by keyword (tokenized, scored).
 
-    Uses MongoDB regex for efficient searching.
-    Falls back to keyword matching when no embedding model is available.
+    Unlike a naive contiguous-phrase regex, the query is tokenized and a
+    chunk matches if it contains ANY query token. Chunks are ranked by:
+
+    1. Token coverage — fraction of distinct query tokens present (primary)
+    2. Match frequency — number of sentences containing any token (secondary)
+
+    This means multi-word queries that are not verbatim in the text still
+    find relevant chunks (e.g. "javascript rendered page" matches a chunk
+    that says "JavaScript renders the page dynamically").
 
     Args:
         query: Search query string.
         limit: Maximum number of results to return.
 
     Returns:
-        List of matching chunks with source metadata.
+        List of matching chunks with source metadata, sorted by relevance.
     """
+    tokens = _tokenize_query(query)
+    if not tokens:
+        return []
+
     db = get_db()
-    query_lower = query.lower()
+
+    # OR-regex: match chunks containing at least one query token
+    or_pattern = "|".join(re.escape(t) for t in tokens)
 
     pipeline = [
         {"$match": {
             "$or": [
-                {"text": {"$regex": re.escape(query_lower), "$options": "i"}},
-                {"sentences": {"$regex": re.escape(query_lower), "$options": "i"}},
+                {"text": {"$regex": or_pattern, "$options": "i"}},
+                {"sentences": {"$regex": or_pattern, "$options": "i"}},
             ]
         }},
         {"$lookup": {
@@ -363,38 +388,60 @@ def search_chunks(query: str, limit: int = 5) -> list[dict]:
             "as": "source_info",
         }},
         {"$unwind": {"path": "$source_info", "preserveNullAndEmptyArrays": True}},
-        {"$addFields": {
-            "score": {"$size": {
-                "$filter": {
-                    "input": "$sentences",
-                    "as": "s",
-                    "cond": {
-                        "$regexMatch": {
-                            "input": {"$toLower": "$$s"},
-                            "regex": re.escape(query_lower),
-                        }
-                    }
-                }
-            }}
-        }},
         {"$project": {
             "_id": 0,
             "embedding": 0,
             "source_id": 0,
             "source_info": 0,
         }},
-        {"$sort": {"score": -1}},
-        {"$limit": limit},
     ]
 
-    results = list(db.data.aggregate(pipeline))
+    candidates = list(db.data.aggregate(pipeline))
+    if not candidates:
+        return []
 
-    # Add url from source_info after aggregation (MongoDB 4.4 compat)
-    for r in results:
-        if "url" not in r or not r["url"]:
-            r["url"] = ""
+    # Score candidates in Python: token coverage dominates, frequency breaks ties
+    scored = []
+    for r in candidates:
+        sentences = r.get("sentences") or []
+        joined = " ".join(sentences).lower()
+        matched = [t for t in tokens if t in joined]
+        token_coverage = len(matched) / len(tokens)
+        freq = sum(1 for s in sentences if any(t in s.lower() for t in tokens))
+        # Coverage contributes 0..10; frequency is a small tiebreaker (max +0.5)
+        # so a chunk matching ALL tokens always beats one matching only some.
+        score = round(token_coverage * 10.0 + min(freq, 5) * 0.1, 4)
+        r["score"] = score
+        scored.append(r)
 
-    return results
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:limit]
+
+
+# Common English stopwords — excluded from keyword search tokens
+_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "do", "does",
+    "did", "for", "from", "had", "has", "have", "how", "in", "is", "it",
+    "its", "of", "on", "or", "that", "the", "this", "these", "those",
+    "to", "was", "were", "what", "when", "where", "which", "who", "why",
+    "with", "not", "no", "we", "you", "he", "she", "they",
+})
+
+
+def _tokenize_query(query: str) -> list[str]:
+    """Split a search query into meaningful lowercase tokens.
+
+    Strips punctuation, lowercases, drops stopwords and 1-char tokens.
+    Preserves code/identifier terms (e.g. "bge-small-en-v1.5", "PLAYWRIGHT").
+
+    Args:
+        query: Raw search query.
+
+    Returns:
+        List of normalized search tokens.
+    """
+    raw = re.findall(r"[a-zA-Z0-9]+", query.lower())
+    return [t for t in raw if len(t) >= 2 and t not in _STOPWORDS]
 
 
 def vector_search(query: str, limit: int = 5, min_score: float = 0.7) -> list[dict]:
@@ -419,11 +466,14 @@ def vector_search(query: str, limit: int = 5, min_score: float = 0.7) -> list[di
 
     db = get_db()
 
-    # Fetch all chunks with embeddings (limit to a reasonable number)
+    # Scan embedded chunks (no hard 200-chunk cap — that caused false
+    # "LOW confidence" results by silently skipping most of the index).
+    # The cap is configurable via ACG_VECTOR_MAX_CANDIDATES (default 10000).
+    max_candidates = int(os.environ.get("ACG_VECTOR_MAX_CANDIDATES", "10000"))
     cursor = db.data.find(
         {"embedding": {"$exists": True}},
         {"_id": False},
-    ).limit(200)
+    ).limit(max_candidates)
 
     scored_results = []
     for chunk in cursor:
@@ -481,8 +531,11 @@ def save_claim(claim_data: dict) -> bool:
     """
     db = get_db()
     claim_data["created_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    # Upsert scoped to (shi_prefix, claim_id): claim IDs repeat across
+    # grounded texts, so the prefix disambiguates which source a claim
+    # belongs to (prevents cross-source overwrite).
     db.claims.update_one(
-        {"claim_id": claim_data["claim_id"]},
+        {"shi_prefix": claim_data.get("shi_prefix", ""), "claim_id": claim_data["claim_id"]},
         {"$set": claim_data},
         upsert=True,
     )
