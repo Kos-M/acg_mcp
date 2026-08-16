@@ -27,34 +27,50 @@ ACG provides a dual-layer standard for veracity assurance:
 
 ## Installation
 
-There are two ways to install — choose based on your use case:
+Requires **Python 3.11+**. A virtual environment is **strongly recommended** —
+on recent Debian/Ubuntu (23.04+) and other PEP 668 distros, bare `pip install`
+refuses to write to the system Python, so Option A is the reliable path there.
 
-### Option A: Local development (editable install)
-
-For local development where you'll edit the code, install in editable mode:
+### Option A: Virtual environment + editable install (recommended)
 
 ```bash
-# Clone the repo
 git clone https://github.com/Kos-M/acg_mcp.git
 cd acg_mcp
 
-# Install globally in editable mode (recommended for agents/CLI usage)
-pip install -e .
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
 
-# Or use a venv:
-# python -m venv venv && source venv/bin/activate && pip install -e .
+pip install -e .
 ```
 
-This makes the `acg-mcp` command available **system-wide** (or venv-wide), so you can
-run it from any directory.
+This installs the package and its dependencies into the venv and puts the
+`acg-mcp` command on PATH **while the venv is active**. Editable mode means
+local code changes apply immediately — no reinstall needed.
 
-### Option B: Using the source directly
+MCP clients don't source your shell, so point them at the venv's binary
+by absolute path instead of relying on PATH (see [Connect from an MCP client](#connect-from-an-mcp-client)).
+
+### Option B: System-wide install (agents / CLI tools)
+
+If you want `acg-mcp` available on PATH from **any** directory without a venv:
+
+```bash
+git clone https://github.com/Kos-M/acg_mcp.git
+cd acg_mcp
+pip install -e .
+```
+
+If pip fails with `externally-managed-environment` (PEP 668), either use a venv
+(Option A) or add `--break-system-packages`.
+
+### Option C: Run from source (no install)
 
 ```bash
 git clone https://github.com/Kos-M/acg_mcp.git
 cd acg_mcp
 pip install -r requirements.txt
-# Then run with: python -m src.server
+# Must be run from the project root:
+python -m src.server
 ```
 
 ## Configuration
@@ -70,6 +86,11 @@ MONGO_DB=acg_protocol
 
 # Embedding model cache directory (optional)
 EMBEDDING_CACHE_DIR=
+
+# Vector search candidate cap (optional, default: 10000).
+# Number of embedded chunks scanned per query. Raise it if your index
+# exceeds this and you see false "LOW confidence" results.
+ACG_VECTOR_MAX_CANDIDATES=10000
 ```
 
 For MongoDB Atlas:
@@ -81,9 +102,10 @@ MONGO_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/acg_protocol?ret
 
 ### Run the MCP server (stdio transport)
 
-**After editable install (recommended for global use):**
+**After installing with Option A or B:**
 ```bash
-# Works from ANY directory — no venv activation needed if installed system-wide
+# venv (Option A): works while the venv is active
+# system-wide (Option B): works from any directory
 acg-mcp
 ```
 
@@ -98,10 +120,26 @@ python -m src.server
 The server communicates over **stdio**. These examples work for both
 Claude Desktop and Opencode (same `mcpServers` JSON format).
 
-#### Global install (recommended for agents & tools)
+#### Installed CLI (venv or system-wide)
 
-After `pip install -e .`, the `acg-mcp` command is available globally.
-Use it directly in your MCP config — no path needed:
+After installing with **Option A** (venv) or **Option B** (system-wide), the
+`acg-mcp` command is on PATH. MCP clients don't source your shell, so if you
+used a venv, give the client the venv's absolute path:
+
+```json
+{
+  "mcpServers": {
+    "acg-mcp": {
+      "command": "/absolute/path/to/acg_mcp/venv/bin/acg-mcp",
+      "env": {
+        "MONGO_URI": "mongodb+srv://..."
+      }
+    }
+  }
+}
+```
+
+With a system-wide install (Option B), the bare command works directly:
 
 ```json
 {
@@ -147,8 +185,8 @@ If you haven't installed the CLI, use the full path:
 
 ## Usage from other tools & agents
 
-Once installed globally with `pip install -e .`, any tool or agent on the
-machine can use acg-mcp by referencing it in their MCP configuration.
+Once installed with **Option A** (venv) or **Option B** (system-wide), any tool or
+agent on the machine can use acg-mcp by referencing it in their MCP configuration.
 
 ### Example: WEBFORGE agent setup
 
@@ -176,7 +214,8 @@ The agent can then call ACG tools directly:
 ### Passing environment variables
 
 Pass `MONGO_URI` and other config via the `env` field in the MCP config.
-The server also loads `.env` from the project directory if present.
+The server also loads `.env` from the project directory (via python-dotenv)
+when installed editable (`pip install -e .`) or run from the project root.
 
 ## Available Tools
 
