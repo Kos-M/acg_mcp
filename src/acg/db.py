@@ -345,6 +345,36 @@ def get_chunks_by_source(source_id: str) -> list[dict]:
     return list(cursor)
 
 
+def get_chunk_window(source_id: str, chunk_index: int, radius: int = 1) -> list[dict]:
+    """Get a chunk and its neighbours (``chunk_index ± radius``) for a source.
+
+    Used by the verifier to check a claim against the exact location its
+    Claim Marker points at, while tolerating sentences that straddle a
+    chunk boundary.
+
+    Args:
+        source_id: The source identifier (url_hash).
+        chunk_index: Index of the target chunk.
+        radius: Number of neighbouring chunks to include on each side.
+
+    Returns:
+        Chunk dicts (without embeddings) sorted by chunk_index. Empty if the
+        target chunk does not exist.
+    """
+    db = get_db()
+    cursor = db.data.find(
+        {
+            "source_id": source_id,
+            "chunk_index": {"$gte": chunk_index - radius, "$lte": chunk_index + radius},
+        },
+        {"_id": False, "embedding": False},
+    ).sort("chunk_index", ASCENDING)
+    chunks = list(cursor)
+    if not any(c.get("chunk_index") == chunk_index for c in chunks):
+        return []
+    return chunks
+
+
 def search_chunks(query: str, limit: int = 5) -> list[dict]:
     """Search across all data chunks by keyword (tokenized, scored).
 

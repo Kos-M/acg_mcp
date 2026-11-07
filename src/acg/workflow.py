@@ -6,7 +6,7 @@ Runs the full Audited Context Generation pipeline in ONE call:
     2. index     — if confidence is LOW and a URL was provided, index it
                    first, then re-search (auto-fetch)
     3. ground    — compose a grounded answer with UGVP Claim Markers
-    4. verify    — re-fetch every source and fuzzy-match each claim (audit)
+    4. verify    — re-fetch every source and check each claim against its chunk (audit)
     5. audit     — build the Veracity Audit Registry (SSR + RAR)
 
 The result is a self-auditing report: the grounded answer, per-claim
