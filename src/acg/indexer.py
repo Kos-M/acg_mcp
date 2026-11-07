@@ -518,23 +518,20 @@ def index_url(url: str, sentences_per_chunk: int = 8) -> dict:
 
 
 def search_sources(query: str, limit: int = 5) -> list[dict]:
-    """Search indexed sources by semantic similarity or keyword.
+    """Search indexed sources with vector and keyword search combined.
 
-    First attempts vector search (cosine similarity on embeddings).
-    Falls back to keyword search if embeddings are unavailable.
+    See ``db.hybrid_search``: both searches always run and are fused into a
+    single ranking, so an exact keyword hit is not hidden by a weak semantic
+    match elsewhere. Works keyword-only when no embedding model is available.
 
     Args:
         query: Search query string.
         limit: Maximum number of results.
 
     Returns:
-        List of matching chunks with source metadata.
+        List of matching chunks with source metadata. ``score`` is 0-1;
+        ``hybrid_score``, ``vector_score`` and ``keyword_score`` are included.
     """
-    from src.acg.db import vector_search, search_chunks
+    from src.acg.db import hybrid_search
 
-    # Try vector search first
-    results = vector_search(query, limit=limit, min_score=0.7)
-    if results:
-        return results
-    # Fall back to keyword search
-    return search_chunks(query, limit)
+    return hybrid_search(query, limit)

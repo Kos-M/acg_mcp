@@ -474,7 +474,9 @@ def _tokenize_query(query: str) -> list[str]:
     return [t for t in raw if len(t) >= 2 and t not in _STOPWORDS]
 
 
-def vector_search(query: str, limit: int = 5, min_score: float = 0.7) -> list[dict]:
+def vector_search(
+    query: str, limit: int = 5, min_score: float = 0.7, fallback: bool = True
+) -> list[dict]:
     """Search chunks by semantic similarity using cosine similarity on embeddings.
 
     Computes cosine similarity in Python since MongoDB 4.4 doesn't support
@@ -484,6 +486,9 @@ def vector_search(query: str, limit: int = 5, min_score: float = 0.7) -> list[di
         query: Search query string.
         limit: Maximum number of results to return.
         min_score: Minimum cosine similarity threshold (0-1).
+        fallback: If True and no embedding model is available, return
+            keyword search results instead. ``hybrid_search`` passes False
+            so keyword scores are never mistaken for cosine scores.
 
     Returns:
         List of matching chunks with source metadata, sorted by similarity.
@@ -491,8 +496,7 @@ def vector_search(query: str, limit: int = 5, min_score: float = 0.7) -> list[di
     # Generate query embedding
     query_embedding = embed_text(query)
     if not query_embedding:
-        # Fall back to keyword search
-        return search_chunks(query, limit)
+        return search_chunks(query, limit) if fallback else []
 
     db = get_db()
 
@@ -530,6 +534,98 @@ def vector_search(query: str, limit: int = 5, min_score: float = 0.7) -> list[di
     # Sort by score descending
     scored_results.sort(key=lambda x: x["score"], reverse=True)
     return scored_results[:limit]
+
+
+# ---------------------------------------------------------------------------
+# HYBRID SEARCH (vector + keyword, fused into one ranking)
+# ---------------------------------------------------------------------------
+
+# Weights of the two signals in the fused ranking score.
+HYBRID_VECTOR_WEIGHT = 0.5
+HYBRID_KEYWORD_WEIGHT = 0.5
+# A vector-only hit (no keyword match) must clear this cosine score to be
+# returned at all, matching the old vector_search gate.
+HYBRID_VECTOR_ONLY_MIN = 0.7
+# Chunks that also match keywords get vector credit from this cosine score up.
+HYBRID_VECTOR_FLOOR = 0.5
+# search_chunks scores are coverage * 10 + up to 0.5 frequency bonus.
+_KEYWORD_SCORE_SCALE = 10.0
+
+
+def _vector_norm(cos: float) -> float:
+    """Map cosine similarity [FLOOR, 1] onto [0, 1]."""
+    span = 1.0 - HYBRID_VECTOR_FLOOR
+    return max(0.0, min(1.0, (cos - HYBRID_VECTOR_FLOOR) / span))
+
+
+def hybrid_search(query: str, limit: int = 5) -> list[dict]:
+    """Search chunks with vector and keyword search combined into one ranking.
+
+    Previously vector results were returned whenever any chunk cleared the
+    cosine gate, so a weak semantic match on an unrelated chunk hid an exact
+    keyword hit. Here both searches always run and each candidate chunk is
+    ranked by::
+
+        hybrid_score = 0.5 * vector_norm + 0.5 * keyword_norm
+
+    where ``vector_norm`` rescales cosine [0.5, 1] to [0, 1] and
+    ``keyword_norm`` is query-token coverage (0-1). A chunk matched by both
+    searches therefore outranks one matched by only one of them.
+
+    Each result keeps ``score`` on a 0-1 scale for the confidence
+    calculations (the stronger of cosine similarity and keyword coverage),
+    and also reports ``hybrid_score``, ``vector_score`` and ``keyword_score``.
+
+    Args:
+        query: Search query string.
+        limit: Maximum number of results to return.
+
+    Returns:
+        Chunks sorted by ``hybrid_score`` (descending).
+    """
+    pool = max(limit * 4, 20)
+    vector_hits = vector_search(query, limit=pool, min_score=HYBRID_VECTOR_FLOOR, fallback=False)
+    keyword_hits = search_chunks(query, limit=pool)
+
+    merged: dict[str, dict] = {}
+
+    def _key(r: dict) -> str:
+        return r.get("css_selector") or f"{r.get('url', '')}#{r.get('chunk_index')}"
+
+    for r in keyword_hits:
+        kw_raw = float(r.get("score", 0.0))
+        entry = dict(r)
+        entry["keyword_score"] = kw_raw
+        entry["vector_score"] = None
+        entry["_kw_norm"] = min(kw_raw / _KEYWORD_SCORE_SCALE, 1.0)
+        merged[_key(r)] = entry
+
+    for r in vector_hits:
+        cos = float(r.get("score", 0.0))
+        k = _key(r)
+        if k in merged:
+            merged[k]["vector_score"] = cos
+            for field in ("url", "shi_prefix", "text", "sentences"):
+                merged[k].setdefault(field, r.get(field))
+        elif cos >= HYBRID_VECTOR_ONLY_MIN:
+            entry = dict(r)
+            entry["vector_score"] = cos
+            entry["keyword_score"] = None
+            entry["_kw_norm"] = 0.0
+            merged[k] = entry
+
+    results = []
+    for entry in merged.values():
+        cos = entry["vector_score"] or 0.0
+        kw_norm = entry.pop("_kw_norm")
+        entry["hybrid_score"] = round(
+            HYBRID_VECTOR_WEIGHT * _vector_norm(cos) + HYBRID_KEYWORD_WEIGHT * kw_norm, 4
+        )
+        entry["score"] = round(max(cos, kw_norm), 4)
+        results.append(entry)
+
+    results.sort(key=lambda x: (x["hybrid_score"], x["score"]), reverse=True)
+    return results[:limit]
 
 
 def delete_chunks_by_source(source_id: str) -> bool:
