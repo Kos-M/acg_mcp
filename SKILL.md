@@ -61,7 +61,7 @@ MONGO_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/acg_protocol?ret
 | `acg_list_sources` | List all indexed sources with metadata |
 | `acg_count_sources` | Count total indexed sources |
 | `acg_generate_grounded_text` | Create text with inline Claim Markers (UGVP Layer 1) |
-| `acg_verify_claims` | Parse Claim Markers, re-fetch sources, fuzzy-match claims |
+| `acg_verify_claims` | Parse Claim Markers, re-fetch sources, check claims against their cited chunk |
 | `acg_build_var` | Build Veracity Audit Registry (SSR + RAR entries) |
 | `acg_crawl_and_index` | BFS URL discovery + automatic ACG indexing |
 | `acg_crawl_status` | Check background crawl task status |

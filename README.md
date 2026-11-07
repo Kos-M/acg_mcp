@@ -21,9 +21,12 @@ every answer **auditable by construction**:
   precise chunk inside it.
 
 - **Verify instead of trust.** `acg_verify_claims` re-fetches every source and
-  fuzzy-matches each claim against the actual text, so verification is not a
-  self-reported LLM opinion — it is an independent, repeatable check. A claim
-  either exists in the cited source or it fails.
+  checks each claim against the exact chunk its marker points at, so
+  verification is not a self-reported LLM opinion — it is an independent,
+  repeatable check. Every number in a claim must appear in that chunk, so a
+  claim that contradicts its source fails. Each result carries a `status`
+  (`exact`, `supported`, `partial`, `contradicted`, `not_found`, `unlocated`)
+  and a `similarity` score; only `exact` and `supported` count as verified.
 
 - **Know when the knowledge base is enough.** `acg_check_indexed` returns a
   confidence score (HIGH / MEDIUM / LOW) before you ever hit the network, so
@@ -51,7 +54,7 @@ verification result, and here is the audit record."**
 - **Search Sources** → Semantic (vector) + keyword search across indexed content
 - **Check Indexed** → Confidence-scored lookup to avoid unnecessary web_fetch calls
 - **Generate Grounded Text** → Create verifiable output with inline Claim Markers
-- **Verify Claims** → Re-fetch sources, fuzzy-match claims against source text
+- **Verify Claims** → Re-fetch sources, check each claim against its cited chunk (numbers must match)
 - **Build VAR** → Generate machine-readable Veracity Audit Registry (SSR + RAR)
 - **Crawl & Index** → BFS URL discovery + automatic ACG indexing pipeline
 - **Reset Database** → Drop all ACG collections (with confirmation guard)
@@ -306,7 +309,7 @@ pipeline for you, in this order:
 2. **index** — if confidence is LOW and a `url` was provided, index it
    first, then re-search (auto-fetch)
 3. **ground** — compose a grounded answer with inline UGVP Claim Markers
-4. **verify** — re-fetch every cited source and fuzzy-match each claim
+4. **verify** — re-fetch every cited source and check each claim against its cited chunk
 5. **audit** — build the Veracity Audit Registry (SSR + RAR)
 
 The single returned report contains everything: the grounded answer,
@@ -402,7 +405,7 @@ editable (`pip install -e .`) or run from the project root.
 | `acg_list_sources` | List all indexed sources |
 | `acg_count_sources` | Count total indexed sources |
 | `acg_generate_grounded_text` | Create text with Claim Markers (UGVP) |
-| `acg_verify_claims` | Verify claims against their sources (fuzzy matching) |
+| `acg_verify_claims` | Verify claims against their cited chunks (status + similarity) |
 | `acg_build_var` | Build Veracity Audit Registry (SSR + RAR) |
 | `acg_crawl_and_index` | Crawl + index multiple URLs (background support) |
 | `acg_crawl_status` | Check background crawl task status |

@@ -71,7 +71,7 @@ def register_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="acg_verify_claims",
-        description="Verify all claims in grounded text against their indexed sources. Parses Claim Markers, re-fetches sources, and checks if claims exist using fuzzy matching.",
+        description="Verify all claims in grounded text against their indexed sources. Parses Claim Markers, re-fetches sources, and checks each claim against the chunk its marker points at. Numbers in the claim must appear in that chunk. Per-claim `status` is exact | supported | partial | contradicted | not_found | unlocated | error; only exact and supported are verified.",
     )
     def acg_verify_claims(text: str) -> str:
         """Verify claims in grounded text.

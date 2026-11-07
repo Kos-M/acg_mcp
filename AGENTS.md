@@ -23,7 +23,7 @@ Standalone MCP server for the ACG (Audited Context Generation) Protocol.
 │   │   ├── var.py         # Veracity Audit Registry
 │   │   ├── db.py          # MongoDB CRUD operations
 │   │   ├── indexer.py     # URL fetching, text extraction, chunking, embedding
-│   │   ├── verifier.py    # Claim verification with fuzzy matching
+│   │   ├── verifier.py    # Claim verification (chunk-scoped, number-strict)
 │   │   └── spider.py      # BFS URL crawler
 │   └── tools/             # MCP tool registrations
 │       ├── __init__.py
