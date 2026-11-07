@@ -133,10 +133,10 @@ def register_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="acg_search_sources",
-        description="Search indexed sources by keyword. Returns matching chunks with source metadata and relevance scores.",
+        description="Search indexed sources with vector and keyword search combined into one ranking. Returns matching chunks with source metadata, score (0-1), hybrid_score, vector_score and keyword_score.",
     )
     def acg_search_sources(query: str, limit: int = 5) -> str:
-        """Search indexed sources by keyword.
+        """Search indexed sources (hybrid vector + keyword).
 
         Args:
             query: Search query string.

@@ -24,7 +24,7 @@ from src.acg.spider import extract_links, crawl_urls, crawl_and_summarize, is_sa
 from src.acg.db import (
     save_source, get_source, get_source_by_url_hash, get_source_by_url,
     delete_source, list_sources, count_sources,
-    save_data_chunks, get_chunks_by_source, search_chunks, vector_search,
+    save_data_chunks, get_chunks_by_source, search_chunks, vector_search, hybrid_search,
     delete_chunks_by_source, embed_text, cosine_similarity,
     save_claim, get_claim, list_claims, delete_claim,
     save_relationship, get_relationship, list_relationships, delete_relationship,
@@ -43,7 +43,7 @@ __all__ = [
     "extract_links", "crawl_urls", "crawl_and_summarize", "is_same_domain",
     "save_source", "get_source", "get_source_by_url_hash", "get_source_by_url",
     "delete_source", "list_sources", "count_sources",
-    "save_data_chunks", "get_chunks_by_source", "search_chunks", "vector_search",
+    "save_data_chunks", "get_chunks_by_source", "search_chunks", "vector_search", "hybrid_search",
     "delete_chunks_by_source", "embed_text", "cosine_similarity",
     "save_claim", "get_claim", "list_claims", "delete_claim",
     "save_relationship", "get_relationship", "list_relationships", "delete_relationship",

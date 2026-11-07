@@ -398,7 +398,7 @@ editable (`pip install -e .`) or run from the project root.
 | `acg_run_workflow` | **Enforced pipeline** — search, auto-index, ground, verify, audit in one call |
 | `acg_index_url` | Index a URL for ACG — fetches, chunks, embeds, stores |
 | `acg_check_indexed` | Check if a query has results in indexed sources |
-| `acg_search_sources` | Search indexed sources by keyword |
+| `acg_search_sources` | Search indexed sources (vector + keyword, one ranking) |
 | `acg_list_sources` | List all indexed sources |
 | `acg_count_sources` | Count total indexed sources |
 | `acg_generate_grounded_text` | Create text with Claim Markers (UGVP) |
