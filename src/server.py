@@ -15,6 +15,7 @@ import sys
 from mcp.server.fastmcp import FastMCP
 
 from src.config import config
+from src.tools import run_sync_tools_in_threads
 from src.tools.indexer_tools import register_tools as register_indexer
 from src.tools.verifier_tools import register_tools as register_verifier
 from src.tools.spider_tools import register_tools as register_spider
@@ -30,6 +31,9 @@ def create_server() -> FastMCP:
         instructions=config.SERVER_DESCRIPTION,
         debug=False,
     )
+
+    # Blocking tools must not run on the event loop (see src/tools/__init__.py)
+    run_sync_tools_in_threads(mcp)
 
     # Register all tool groups
     register_indexer(mcp)

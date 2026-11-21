@@ -10,45 +10,20 @@ from mcp.server.fastmcp import FastMCP
 
 from src.acg.indexer import index_url as _index_url
 from src.acg.indexer import search_sources as _search_sources
-from src.acg.db import list_sources, count_sources, get_source_by_url, get_chunks_by_source
+from src.acg.db import list_sources, count_sources, get_neighbour_chunks
+from src.acg.confidence import assess, INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
 
 
-def _compute_confidence(results: list, total_indexed: int) -> float:
-    if not results or total_indexed == 0:
-        return 0.0
-    best_score = max(r.get("score", 0) for r in results) if results else 0
-    coverage = min(len(results) / max(total_indexed, 1), 1.0)
-    return min((best_score * 0.7 + coverage * 0.3), 1.0)
-
-
-def _get_confidence_tier(confidence: float) -> str:
-    if confidence >= 0.7:
-        return "HIGH"
-    elif confidence >= 0.4:
-        return "MEDIUM"
-    return "LOW"
-
-
 def _expand_chunk(chunk: dict, n: int = 2) -> str:
+    """Return the chunk text with up to ``n`` neighbouring chunks on each side."""
     url = chunk.get("url", "")
     chunk_index = chunk.get("chunk_index")
     if not url or chunk_index is None:
         return chunk.get("text", "")
-    source = get_source_by_url(url)
-    if not source:
-        return chunk.get("text", "")
-    source_id = source.get("url_hash", "")
-    if not source_id:
-        return chunk.get("text", "")
-    all_chunks = get_chunks_by_source(source_id)
-    if not all_chunks:
-        return chunk.get("text", "")
-    chunk_map = {c.get("chunk_index"): c.get("text", "") for c in all_chunks}
-    start = max(0, chunk_index - n)
-    end = chunk_index + n
-    parts = [chunk_map[i] for i in range(start, end + 1) if i in chunk_map]
+    parts = [c.get("text", "") for c in get_neighbour_chunks(url, chunk_index, n)]
+    parts = [p for p in parts if p]
     return "\n\n".join(parts) if parts else chunk.get("text", "")
 
 
@@ -77,7 +52,13 @@ def register_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="acg_check_indexed",
-        description="Check if a query has matching results in indexed sources. Returns confidence score (0-1) with tier (HIGH/MEDIUM/LOW). HIGH or MEDIUM means answer from indexed sources is reliable — do NOT use web_fetch.",
+        description=(
+            "Check if indexed sources can answer a query. Returns confidence (0-1), "
+            "tier (HIGH/MEDIUM/LOW), answerable, the best matches and an instruction. "
+            "HIGH: answer from indexed sources, no web_fetch. MEDIUM: sources cover "
+            "part of the query; answer what they support and web_fetch the gaps. "
+            "LOW (answerable=false): matches are likely off-topic; use web_fetch."
+        ),
     )
     def acg_check_indexed(query: str) -> str:
         """Check indexed sources for a query.
@@ -86,7 +67,7 @@ def register_tools(mcp: FastMCP) -> None:
             query: The search query to check against indexed sources.
 
         Returns:
-            JSON with confidence score, tier, matches, and instruction.
+            JSON with confidence score, tier, answerable, matches, and instruction.
         """
         try:
             results = _search_sources(query, limit=5)
@@ -96,18 +77,11 @@ def register_tools(mcp: FastMCP) -> None:
                 return json.dumps({
                     "confidence": 0.0, "tier": "LOW", "answerable": False,
                     "matches": [], "coverage": {"sources_matched": 0, "total_indexed": total},
-                    "instruction": "No matching sources found. Use web_fetch.",
+                    "instruction": INSTRUCTIONS["LOW"],
                 }, indent=2)
 
-            confidence = _compute_confidence(results, total)
-            tier = _get_confidence_tier(confidence)
+            verdict = assess(results)
             distinct = len(set(r.get("url", "") for r in results if r.get("url")))
-
-            instruction = (
-                f"{tier} confidence — answer from indexed sources. DO NOT use web_fetch."
-                if confidence >= 0.4
-                else "LOW confidence — weak match. Use web_fetch and cross-reference."
-            )
 
             matches = []
             for r in results:
@@ -116,20 +90,22 @@ def register_tools(mcp: FastMCP) -> None:
                     "url": r.get("url", ""),
                     "shi_prefix": r.get("shi_prefix", ""),
                     "css_selector": r.get("css_selector", ""),
-                    "relevance_score": r.get("score", 0),
+                    "relevance_score": r.get("hybrid_score", r.get("score", 0)),
+                    "vector_score": r.get("vector_score"),
+                    "keyword_coverage": r.get("keyword_coverage"),
                     "chunk_index": r.get("chunk_index"),
                     "text_preview": expanded[:1200],
                     "expanded": len(expanded) > len(r.get("text", "") or ""),
                 })
 
             return json.dumps({
-                "confidence": round(confidence, 4), "tier": tier,
-                "answerable": confidence >= 0.7, "matches": matches,
+                "confidence": verdict["confidence"], "tier": verdict["tier"],
+                "answerable": verdict["answerable"], "matches": matches,
                 "coverage": {"sources_matched": distinct, "total_indexed": total},
-                "instruction": instruction,
+                "instruction": verdict["instruction"],
             }, indent=2, ensure_ascii=False)
         except Exception as e:
-            return json.dumps({"error": str(e), "confidence": 0.0, "tier": "LOW"})
+            return json.dumps({"error": str(e), "confidence": 0.0, "tier": "LOW", "answerable": False})
 
     @mcp.tool(
         name="acg_search_sources",

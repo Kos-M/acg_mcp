@@ -7,18 +7,23 @@ Uses a unified collection design matching the reference implementation:
 - relationships: RSVP relationships (rel_id, rel_type, claim_ids, synthesis_text)
 - var_entries: Veracity Audit Registry entries (protocol, generated_at, ssr_entries, rar_entries)
 
-Vector search is performed in Python (cosine similarity) since MongoDB 4.4
-does not support Atlas $vectorSearch. Falls back to $regex keyword search
-when no embedding model is available.
+Searches run over an in-process cache of the corpus (``corpus.py``), which
+is synced incrementally from MongoDB before each search. Pulling every
+embedding over the network per query took minutes on a remote cluster.
+Keyword search works without an embedding model.
 """
 
 import os
 import re
 import math
+import logging
 import datetime
+import threading
 from typing import Optional
 
-from pymongo import MongoClient, ASCENDING
+import numpy as np
+
+from pymongo import MongoClient, ASCENDING, UpdateOne
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
 
@@ -31,6 +36,13 @@ _db = None
 
 # Lazy-loaded embedding model
 _embedding_model = None
+_embedding_failed = False
+
+# Tools run in worker threads, so the lazy singletons need locks.
+_init_lock = threading.RLock()
+_model_lock = threading.Lock()
+
+logger = logging.getLogger(__name__)
 
 
 def get_client() -> MongoClient:
@@ -42,6 +54,12 @@ def get_client() -> MongoClient:
     Raises:
         ConnectionFailure: If MongoDB is unreachable.
     """
+    global _client
+    with _init_lock:
+        return _get_client_locked()
+
+
+def _get_client_locked() -> MongoClient:
     global _client
     if _client is None:
         try:
@@ -62,6 +80,14 @@ def get_db():
     Returns:
         MongoDB database object.
     """
+    global _db
+    if _db is not None:
+        return _db
+    with _init_lock:
+        return _get_db_locked()
+
+
+def _get_db_locked():
     global _db
     if _db is None:
         client = get_client()
@@ -104,12 +130,13 @@ def get_db():
 
 def close_connection() -> None:
     """Close the MongoDB connection."""
-    global _client, _db, _embedding_model
+    global _client, _db, _embedding_model, _embedding_failed
     if _client is not None:
         _client.close()
     _client = None
     _db = None
     _embedding_model = None
+    _embedding_failed = False
 
 
 # ---------------------------------------------------------------------------
@@ -120,27 +147,50 @@ def get_embedding_model():
     """Get or create the embedding model singleton.
 
     Uses fastembed with BAAI/bge-small-en-v1.5 (384-dim, ~33MB).
-    Falls back to None if fastembed is not installed.
+    Returns None (and does not retry) if fastembed is unavailable.
 
     Returns:
         TextEmbedding instance or None.
     """
-    global _embedding_model
-    if _embedding_model is None:
-        try:
-            from fastembed import TextEmbedding
-            _embedding_model = TextEmbedding(
-                "BAAI/bge-small-en-v1.5",
-                cache_dir=os.environ.get("EMBEDDING_CACHE_DIR", None),
-            )
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
-                f"Failed to load embedding model: {e}. "
-                "Vector search will fall back to keyword search."
-            )
-            _embedding_model = None
+    global _embedding_model, _embedding_failed
+    if _embedding_model is not None or _embedding_failed:
+        return _embedding_model
+    with _model_lock:
+        if _embedding_model is None and not _embedding_failed:
+            try:
+                from fastembed import TextEmbedding
+                _embedding_model = TextEmbedding(
+                    "BAAI/bge-small-en-v1.5",
+                    cache_dir=os.environ.get("EMBEDDING_CACHE_DIR", None),
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load embedding model: {e}. "
+                    "Vector search will fall back to keyword search."
+                )
+                _embedding_failed = True
     return _embedding_model
+
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed several texts in one batched model call.
+
+    Args:
+        texts: Texts to embed.
+
+    Returns:
+        One embedding per text (empty lists if the model is unavailable).
+    """
+    if not texts:
+        return []
+    model = get_embedding_model()
+    if model is None:
+        return [[] for _ in texts]
+    try:
+        return [e.tolist() for e in model.embed(list(texts))]
+    except Exception as e:
+        logger.warning(f"Embedding failed: {e}")
+        return [[] for _ in texts]
 
 
 def embed_text(text: str) -> list[float]:
@@ -152,19 +202,7 @@ def embed_text(text: str) -> list[float]:
     Returns:
         List of floats (384-dim embedding), or empty list if model unavailable.
     """
-    model = get_embedding_model()
-    if model is None:
-        return []
-    try:
-        # embed() returns generator of numpy arrays
-        embeddings = list(model.embed(text))
-        if embeddings:
-            return embeddings[0].tolist()
-        return []
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Embedding failed: {e}")
-        return []
+    return embed_texts([text])[0]
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -302,7 +340,8 @@ def save_data_chunks(source_id: str, chunks: list[dict]) -> bool:
 
     Each chunk dict should include:
         chunk_index, text, sentences, css_selector, shi_prefix, url
-    Embeddings are generated automatically if the model is available.
+    Embeddings are generated in one batched model call (if the model is
+    available) and all chunks are written in one bulk request.
 
     Args:
         source_id: Identifier linking back to the source (url_hash).
@@ -311,20 +350,23 @@ def save_data_chunks(source_id: str, chunks: list[dict]) -> bool:
     Returns:
         True if successful.
     """
+    if not chunks:
+        return True
     db = get_db()
+    to_embed = [i for i, c in enumerate(chunks) if c.get("text")]
+    embeddings = embed_texts([chunks[i]["text"] for i in to_embed])
+    for i, emb in zip(to_embed, embeddings):
+        if emb:
+            chunks[i]["embedding"] = emb
+    ops = []
     for chunk in chunks:
         chunk["source_id"] = source_id
-        # Generate embedding for this chunk
-        chunk_text = chunk.get("text", "")
-        if chunk_text:
-            embedding = embed_text(chunk_text)
-            if embedding:
-                chunk["embedding"] = embedding
-        db.data.update_one(
+        ops.append(UpdateOne(
             {"source_id": source_id, "chunk_index": chunk["chunk_index"]},
             {"$set": chunk},
             upsert=True,
-        )
+        ))
+    db.data.bulk_write(ops, ordered=False)
     return True
 
 
@@ -375,18 +417,68 @@ def get_chunk_window(source_id: str, chunk_index: int, radius: int = 1) -> list[
     return chunks
 
 
+def _synced_corpus():
+    """Return the in-process corpus cache, synced with the database."""
+    from src.acg.corpus import get_corpus
+
+    corpus = get_corpus(DB_NAME, MONGO_URI)
+    corpus.sync(get_db())
+    return corpus
+
+
+# Tokens up to this length must match a whole word; longer ones may match
+# as a word prefix. As substrings, short tokens ("ai", "wp", "mcp") hit
+# almost every chunk ("ai" in "maintain"); prefix matching lets "agent"
+# also find "agents".
+_EXACT_TOKEN_MAX_LEN = 3
+
+
+def _token_is_prefix(token: str) -> bool:
+    return len(token) > _EXACT_TOKEN_MAX_LEN
+
+
+def get_neighbour_chunks(url: str, chunk_index: int, radius: int = 2) -> list[dict]:
+    """Chunks ``chunk_index ± radius`` of a source, served from the corpus cache.
+
+    Returns an empty list if the source is not cached.
+    """
+    corpus = _synced_corpus()
+    return [
+        c for c in corpus.chunks_for_url(url)
+        if c.get("chunk_index") is not None and abs(c["chunk_index"] - chunk_index) <= radius
+    ]
+
+
+def _token_pattern(token: str) -> re.Pattern:
+    """Regex equivalent of the inverted-index match (word or word prefix)."""
+    if not _token_is_prefix(token):
+        return re.compile(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])")
+    return re.compile(rf"(?<![a-z0-9]){re.escape(token)}")
+
+
+def _chunk_result(chunk: dict, score: float) -> dict:
+    return {
+        "url": chunk.get("url", ""),
+        "shi_prefix": chunk.get("shi_prefix", ""),
+        "chunk_index": chunk.get("chunk_index"),
+        "css_selector": chunk.get("css_selector", ""),
+        "text": chunk.get("text", ""),
+        "sentences": list(chunk.get("sentences", [])),
+        "score": round(float(score), 4),
+    }
+
+
 def search_chunks(query: str, limit: int = 5) -> list[dict]:
-    """Search across all data chunks by keyword (tokenized, scored).
+    """Search across all data chunks by keyword (tokenized, IDF-weighted).
 
-    Unlike a naive contiguous-phrase regex, the query is tokenized and a
-    chunk matches if it contains ANY query token. Chunks are ranked by:
+    The query is tokenized (stopwords dropped) and a chunk matches if it
+    contains ANY query token at a word start. Chunks are ranked by:
 
-    1. Token coverage — fraction of distinct query tokens present (primary)
+    1. Weighted token coverage — the share of the query's IDF weight the
+       chunk contains (primary). Rare, distinctive terms ("wordpress") count
+       for more than terms found all over the corpus ("code", "ai"), so a
+       chunk missing the distinctive term cannot reach full coverage.
     2. Match frequency — number of sentences containing any token (secondary)
-
-    This means multi-word queries that are not verbatim in the text still
-    find relevant chunks (e.g. "javascript rendered page" matches a chunk
-    that says "JavaScript renders the page dynamically").
 
     Args:
         query: Search query string.
@@ -394,55 +486,45 @@ def search_chunks(query: str, limit: int = 5) -> list[dict]:
 
     Returns:
         List of matching chunks with source metadata, sorted by relevance.
+        ``score`` is ``coverage * 10 + min(freq, 5) * 0.1`` and
+        ``keyword_coverage`` is the 0-1 weighted coverage.
     """
-    tokens = _tokenize_query(query)
+    tokens = list(dict.fromkeys(_tokenize_query(query)))
     if not tokens:
         return []
 
-    db = get_db()
+    corpus = _synced_corpus()
+    with corpus.lock:
+        n = len(corpus.chunks)
+        if n == 0:
+            return []
+        patterns = {t: _token_pattern(t) for t in tokens}
+        hits = {t: corpus.token_hits(t, _token_is_prefix(t)) for t in tokens}
+        weights = {t: corpus.idf(len(hits[t])) for t in tokens}
+        total_weight = sum(weights.values())
 
-    # OR-regex: match chunks containing at least one query token
-    or_pattern = "|".join(re.escape(t) for t in tokens)
+        coverage = np.zeros(n, dtype=np.float64)
+        for t in tokens:
+            coverage[hits[t]] += weights[t]
+        coverage /= total_weight
 
-    pipeline = [
-        {"$match": {
-            "$or": [
-                {"text": {"$regex": or_pattern, "$options": "i"}},
-                {"sentences": {"$regex": or_pattern, "$options": "i"}},
-            ]
-        }},
-        {"$lookup": {
-            "from": "sources",
-            "localField": "source_id",
-            "foreignField": "url_hash",
-            "as": "source_info",
-        }},
-        {"$unwind": {"path": "$source_info", "preserveNullAndEmptyArrays": True}},
-        {"$project": {
-            "_id": 0,
-            "embedding": 0,
-            "source_id": 0,
-            "source_info": 0,
-        }},
-    ]
+        candidates = np.nonzero(coverage)[0]
+        if not len(candidates):
+            return []
+        order = candidates[np.argsort(-coverage[candidates], kind="stable")]
+        # Sentence frequency is only a tie-breaker; compute it for the head.
+        head = order[: max(limit * 5, 50)]
 
-    candidates = list(db.data.aggregate(pipeline))
-    if not candidates:
-        return []
-
-    # Score candidates in Python: token coverage dominates, frequency breaks ties
-    scored = []
-    for r in candidates:
-        sentences = r.get("sentences") or []
-        joined = " ".join(sentences).lower()
-        matched = [t for t in tokens if t in joined]
-        token_coverage = len(matched) / len(tokens)
-        freq = sum(1 for s in sentences if any(t in s.lower() for t in tokens))
-        # Coverage contributes 0..10; frequency is a small tiebreaker (max +0.5)
-        # so a chunk matching ALL tokens always beats one matching only some.
-        score = round(token_coverage * 10.0 + min(freq, 5) * 0.1, 4)
-        r["score"] = score
-        scored.append(r)
+        scored = []
+        for i in head:
+            chunk = corpus.chunks[i]
+            freq = sum(
+                1 for sent in chunk["sentences"]
+                if any(p.search(sent.lower()) for p in patterns.values())
+            )
+            r = _chunk_result(chunk, coverage[i] * 10.0 + min(freq, 5) * 0.1)
+            r["keyword_coverage"] = round(float(coverage[i]), 4)
+            scored.append(r)
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:limit]
@@ -477,10 +559,10 @@ def _tokenize_query(query: str) -> list[str]:
 def vector_search(
     query: str, limit: int = 5, min_score: float = 0.7, fallback: bool = True
 ) -> list[dict]:
-    """Search chunks by semantic similarity using cosine similarity on embeddings.
+    """Search chunks by semantic similarity (cosine) over the corpus cache.
 
-    Computes cosine similarity in Python since MongoDB 4.4 doesn't support
-    Atlas $vectorSearch. Falls back to keyword search if no embedding model.
+    Every embedded chunk is scored with one matrix product in memory; no
+    per-query transfer of embeddings from MongoDB.
 
     Args:
         query: Search query string.
@@ -493,47 +575,16 @@ def vector_search(
     Returns:
         List of matching chunks with source metadata, sorted by similarity.
     """
-    # Generate query embedding
     query_embedding = embed_text(query)
     if not query_embedding:
         return search_chunks(query, limit) if fallback else []
 
-    db = get_db()
-
-    # Scan embedded chunks (no hard 200-chunk cap — that caused false
-    # "LOW confidence" results by silently skipping most of the index).
-    # The cap is configurable via ACG_VECTOR_MAX_CANDIDATES (default 10000).
-    max_candidates = int(os.environ.get("ACG_VECTOR_MAX_CANDIDATES", "10000"))
-    cursor = db.data.find(
-        {"embedding": {"$exists": True}},
-        {"_id": False},
-    ).limit(max_candidates)
-
-    scored_results = []
-    for chunk in cursor:
-        chunk_embedding = chunk.get("embedding")
-        if not chunk_embedding:
-            continue
-        score = cosine_similarity(query_embedding, chunk_embedding)
-        if score >= min_score:
-            # Look up source info
-            source_info = db.sources.find_one(
-                {"url_hash": chunk.get("source_id")},
-                {"_id": False, "url": 1},
-            )
-            scored_results.append({
-                "url": source_info["url"] if source_info else "",
-                "shi_prefix": chunk.get("shi_prefix", ""),
-                "chunk_index": chunk.get("chunk_index"),
-                "css_selector": chunk.get("css_selector", ""),
-                "text": chunk.get("text", ""),
-                "sentences": chunk.get("sentences", []),
-                "score": round(score, 4),
-            })
-
-    # Sort by score descending
-    scored_results.sort(key=lambda x: x["score"], reverse=True)
-    return scored_results[:limit]
+    corpus = _synced_corpus()
+    with corpus.lock:
+        scores = corpus.vector_scores(query_embedding)
+        idx = np.nonzero(scores >= min_score)[0]
+        idx = idx[np.argsort(-scores[idx], kind="stable")][:limit]
+        return [_chunk_result(corpus.chunks[i], scores[i]) for i in idx]
 
 
 # ---------------------------------------------------------------------------
@@ -824,6 +875,8 @@ def reset_database() -> dict:
     # Reset the db singleton to force index recreation on next access
     global _db
     _db = None
+    from src.acg.corpus import reset_corpus
+    reset_corpus()
     return {"status": "reset", "collections_dropped": dropped}
 
 
@@ -854,4 +907,6 @@ def clear_collections(collections: list[str] | None = None) -> dict:
         else:
             deleted_counts[coll_name] = 0
 
+    from src.acg.corpus import reset_corpus
+    reset_corpus()
     return {"status": "cleared", "deleted_counts": deleted_counts}

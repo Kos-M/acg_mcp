@@ -22,7 +22,9 @@ Standalone MCP server for the ACG (Audited Context Generation) Protocol.
 │   │   ├── rsvp.py        # Relationship Markers (Layer 2)
 │   │   ├── var.py         # Veracity Audit Registry
 │   │   ├── db.py          # MongoDB CRUD operations
-│   │   ├── indexer.py     # URL fetching, text extraction, chunking, embedding
+│   │   ├── corpus.py      # In-process corpus cache (chunk text + embedding matrix) used by search
+│   │   ├── confidence.py  # Confidence tier / answerable / instruction (single source of truth)
+│   │   ├── indexer.py     # URL fetching, main-content extraction, chunking, embedding
 │   │   ├── verifier.py    # Claim verification (chunk-scoped, number-strict)
 │   │   └── spider.py      # BFS URL crawler
 │   └── tools/             # MCP tool registrations
@@ -38,7 +40,7 @@ Standalone MCP server for the ACG (Audited Context Generation) Protocol.
 ```
 
 ## Stack
-Python 3.12+, MCP Python SDK, pymongo, requests, beautifulsoup4, lxml, fastembed
+Python 3.12+, MCP Python SDK, pymongo, requests, beautifulsoup4, lxml, fastembed, numpy
 
 ## Commands
 - Run (global CLI): `acg-mcp` (after `pip install -e .`)
@@ -51,4 +53,9 @@ Python 3.12+, MCP Python SDK, pymongo, requests, beautifulsoup4, lxml, fastembed
 - `MONGO_URI`: MongoDB connection string (required)
 - `MONGO_DB`: Database name (default: acg_protocol)
 - `EMBEDDING_CACHE_DIR`: Optional cache directory for embedding model
-- `ACG_VECTOR_MAX_CANDIDATES`: Optional cap on embedded chunks scanned per vector search (default: 10000)
+- `ACG_CACHE_DIR`: Optional directory for the on-disk corpus cache (default: `~/.cache/acg-mcp`; empty disables it)
+
+## Notes
+- Tools are plain `def` functions; `run_sync_tools_in_threads` (src/tools/__init__.py) registers them to run in worker threads so one slow call never blocks the server.
+- Search never scans MongoDB per query: `corpus.py` mirrors the chunks in memory and re-syncs only changed sources. Keep it that way — the DB may be remote (Atlas).
+- Changing `extract_text_from_html` output requires bumping `EXTRACTOR_VERSION` (indexer.py). The verifier re-extracts each source with the version it was indexed with, otherwise SHI checks fail for existing sources.

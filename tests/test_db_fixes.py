@@ -16,6 +16,7 @@
    unique index on ``(shi_prefix, claim_id)`` + legacy index migration, and
    an upsert filter scoped to the same compound key.
 
+Fixes 1 and 2 are tested against the corpus cache in test_search_cache.py.
 All MongoDB access is mocked — no live instance required.
 """
 
@@ -143,153 +144,8 @@ class FakeClient:
         return FakeDatabase(self._cols)
 
 
-# ---------------------------------------------------------------------------
-# Fix 1: search_chunks recall (tokenized OR-regex + coverage scoring)
-# ---------------------------------------------------------------------------
-
-class TestSearchChunksRecall:
-    def test_tokenize_query_drops_stopwords(self):
-        assert db._tokenize_query("How to stream a chat completion") == [
-            "stream", "chat", "completion",
-        ]
-
-    def test_tokenize_query_empty_stopwords_only(self):
-        assert db._tokenize_query("the and of") == []
-
-    def test_search_chunks_empty_tokens_returns_empty(self, monkeypatch):
-        fake_db = FakeDatabase({})
-        monkeypatch.setattr(db, "get_db", lambda: fake_db)
-        assert db.search_chunks("the and of", limit=5) == []
-
-    def test_search_chunks_matches_non_verbatim_query(self, monkeypatch):
-        """'chat for streaming' must match 'How to stream a chat completion...'."""
-        docs = [
-            {
-                "chunk_index": 0,
-                "text": "How to stream a chat completion with the API.",
-                "sentences": ["How to stream a chat completion with the API."],
-                "shi_prefix": "a1",
-                "url": "https://example.com/1",
-            },
-            {
-                "chunk_index": 1,
-                "text": "The documentation covers installation only.",
-                "sentences": ["The documentation covers installation only."],
-                "shi_prefix": "b2",
-                "url": "https://example.com/2",
-            },
-        ]
-        data = FakeDataCollection(docs)
-        fake_db = FakeDatabase({"data": data})
-        monkeypatch.setattr(db, "get_db", lambda: fake_db)
-
-        results = db.search_chunks("chat for streaming", limit=5)
-
-        urls = [r["url"] for r in results]
-        assert "https://example.com/1" in urls, (
-            "Non-verbatim multi-word query must still find the relevant chunk"
-        )
-        # The $match regex must be a tokenized OR-regex, not the raw phrase
-        match_stage = data.last_pipeline[0]["$match"]
-        or_regex = match_stage["$or"][0]["text"]["$regex"]
-        assert "chat" in or_regex and "streaming" in or_regex
-        assert "|" in or_regex
-        assert "for" not in or_regex  # stopword must be excluded
-
-    def test_search_chunks_ranks_full_token_coverage_first(self, monkeypatch):
-        """A chunk matching ALL query tokens ranks above a partial match."""
-        docs = [
-            {
-                "chunk_index": 0,
-                "text": "chat streaming is covered later in the guide",
-                "sentences": ["chat streaming is covered later in the guide"],
-                "shi_prefix": "partial",
-                "url": "https://example.com/partial",
-            },
-            {
-                "chunk_index": 1,
-                "text": "chat streaming completion tokens explained",
-                "sentences": ["chat streaming completion tokens explained"],
-                "shi_prefix": "full",
-                "url": "https://example.com/full",
-            },
-        ]
-        data = FakeDataCollection(docs)
-        fake_db = FakeDatabase({"data": data})
-        monkeypatch.setattr(db, "get_db", lambda: fake_db)
-
-        results = db.search_chunks("chat streaming completion", limit=5)
-
-        assert results, "Expected at least one result"
-        assert results[0]["url"] == "https://example.com/full", (
-            "Chunk matching all tokens must rank above partial match"
-        )
-
-    def test_search_chunks_handles_no_candidates(self, monkeypatch):
-        data = FakeDataCollection([])
-        fake_db = FakeDatabase({"data": data})
-        monkeypatch.setattr(db, "get_db", lambda: fake_db)
-        assert db.search_chunks("nonexistenttermxyz", limit=5) == []
-
-
-# ---------------------------------------------------------------------------
-# Fix 2: vector_search configurable candidate cap
-# ---------------------------------------------------------------------------
-
-class TestVectorSearchCap:
-    def _embedded_docs(self, n, hot_index=None):
-        """n chunks; the chunk at hot_index (if any) is similar to [1,0]."""
-        docs = []
-        for i in range(n):
-            embedding = [1.0, 0.0] if i == hot_index else [0.0, 1.0]
-            docs.append({
-                "source_id": f"s{i}",
-                "embedding": embedding,
-                "shi_prefix": f"p{i}",
-                "chunk_index": i,
-                "css_selector": f"#acg-chunk-{i}",
-                "text": f"chunk {i}",
-                "sentences": [f"chunk {i}"],
-            })
-        return docs
-
-    def test_vector_search_default_cap_is_not_200(self, monkeypatch):
-        """A match beyond the old 200-chunk cap must still be found."""
-        os.environ.pop("ACG_VECTOR_MAX_CANDIDATES", None)
-        monkeypatch.setattr(db, "embed_text", lambda t: [1.0, 0.0])
-
-        docs = self._embedded_docs(300, hot_index=250)
-        data = FakeDataCollection(docs)
-        fake_db = FakeDatabase({"data": data, "sources": FakeSourcesCollection("sources")})
-        monkeypatch.setattr(db, "get_db", lambda: fake_db)
-
-        results = db.vector_search("query", limit=5, min_score=0.9)
-
-        assert data.last_cursor_limit is not None
-        assert data.last_cursor_limit != 200, (
-            "Candidate cap must not be the old hard-coded 200"
-        )
-        urls = [r["url"] for r in results]
-        assert "https://example.com/s250" in urls, (
-            "Chunk beyond old 200-cap must be reachable (no silent truncation)"
-        )
-
-    def test_vector_search_cap_configurable_via_env(self, monkeypatch):
-        os.environ["ACG_VECTOR_MAX_CANDIDATES"] = "7"
-        try:
-            monkeypatch.setattr(db, "embed_text", lambda t: [1.0, 0.0])
-            docs = self._embedded_docs(10, hot_index=3)
-            data = FakeDataCollection(docs)
-            fake_db = FakeDatabase({"data": data, "sources": FakeSourcesCollection("sources")})
-            monkeypatch.setattr(db, "get_db", lambda: fake_db)
-
-            db.vector_search("query", limit=5, min_score=0.9)
-
-            assert data.last_cursor_limit == 7, (
-                "ACG_VECTOR_MAX_CANDIDATES must control the candidate cap"
-            )
-        finally:
-            os.environ.pop("ACG_VECTOR_MAX_CANDIDATES", None)
+# Fixes 1 and 2 (search recall, no silent candidate cap) are now covered
+# against the in-process corpus cache in tests/test_search_cache.py.
 
 
 # ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ from src.acg.ugvp import make_claim_marker, parse_claim_markers, make_ssr_entry
 from src.acg.rsvp import parse_relationship_markers, make_rar_entry
 from src.acg.var import build_var
 from src.acg import indexer, verifier
+from src.acg.confidence import compute_confidence, confidence_tier, is_answerable, INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -35,39 +36,13 @@ SIGNED_BY = "ACG Protocol"
 
 
 def _compute_confidence(results: list) -> float:
-    """Normalize search results into a 0-1 confidence score.
-
-    Keyword search scores are 0-10; vector search scores are 0-1.
-    A single score is dominated by the top hit and capped at 1.0.
-
-    Args:
-        results: List of search result dicts with a 'score' key.
-
-    Returns:
-        Confidence in [0, 1].
-    """
-    if not results:
-        return 0.0
-    best = max(r.get("score", 0) for r in results)
-    # Keyword search scales 0-10, vector search scales 0-1.
-    normalized = best / 10.0 if best > 1.0 else best
-    return round(min(normalized, 1.0), 4)
+    """Confidence that the results answer the query (see ``confidence.py``)."""
+    return compute_confidence(results)
 
 
 def _confidence_tier(confidence: float) -> str:
-    """Map a confidence score to a tier label.
-
-    Args:
-        confidence: Confidence score in [0, 1].
-
-    Returns:
-        "HIGH", "MEDIUM", or "LOW".
-    """
-    if confidence >= 0.7:
-        return "HIGH"
-    if confidence >= 0.4:
-        return "MEDIUM"
-    return "LOW"
+    """Map a confidence score to HIGH / MEDIUM / LOW (see ``confidence.py``)."""
+    return confidence_tier(confidence)
 
 
 def _compose_grounded_answer(results: list, max_claims: int = 3) -> str:
@@ -182,17 +157,19 @@ def run_workflow(
         confidence = _compute_confidence(results)
         tier = _confidence_tier(confidence)
 
-    if not results:
+    if not results or tier == "LOW":
+        # Never compose a "grounded" answer from off-topic matches.
         return {
             "query": query,
             "workflow": steps,
-            "confidence": 0.0,
+            "confidence": confidence if results else 0.0,
             "confidence_tier": "LOW",
             "answerable": False,
             "instruction": (
-                "No matching sources found. Index a URL first "
-                "(acg_index_url, or pass url= to this tool) or use "
-                "acg_crawl_and_index."
+                ("No matching sources found. " if not results else
+                 "Indexed sources do not answer this query (best matches are off-topic). ")
+                + "Index a relevant URL first (acg_index_url, or pass url= to this "
+                "tool) or use acg_crawl_and_index."
             ),
             "indexed_url": indexed_url,
             "grounded_answer": "",
@@ -247,7 +224,8 @@ def run_workflow(
         "workflow": steps,
         "confidence": confidence,
         "confidence_tier": tier,
-        "answerable": tier != "LOW",
+        "answerable": is_answerable(tier),
+        "instruction": INSTRUCTIONS[tier],
         "indexed_url": indexed_url,
         "grounded_answer": grounded,
         "verification": verification,
