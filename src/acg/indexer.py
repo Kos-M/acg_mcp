@@ -163,8 +163,196 @@ def _fetch_with_playwright(url: str, timeout: int = 15) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Bump when extract_text_from_html changes its output: the version is stored
+# on each source so the verifier re-extracts with the matching extractor.
+EXTRACTOR_VERSION = 2
+
+
+def extract_text_for_source(html: str, extractor_version: Optional[int]) -> str:
+    """Extract text with the extractor a source was indexed with.
+
+    Sources indexed before versioning have no ``extractor_version`` (v1).
+    """
+    if (extractor_version or 1) < 2:
+        return _extract_text_legacy(html)
+    return extract_text_from_html(html)
+
+
+# Elements that are never content.
+_DROP_TAGS = ["script", "style", "noscript", "iframe", "svg", "template", "button", "form", "dialog"]
+# Page furniture: menus, sidebars, banners, footers.
+_FURNITURE_TAGS = ["nav", "footer", "aside"]
+_FURNITURE_SELECTORS = [
+    "[role=navigation]", "[role=banner]", "[role=contentinfo]", "[role=complementary]",
+    "[role=search]", "[aria-hidden=true]", "[hidden]",
+    ".sr-only", ".visually-hidden", ".screen-reader-text", ".skip-link",
+]
+# Main-content containers, most specific first. GitHub renders READMEs in
+# article.markdown-body; most docs sites use <main> or <article>.
+_MAIN_SELECTORS = [
+    "article.markdown-body", "#readme article", ".markdown-body",
+    "main article", "[role=main] article",
+    "main", "[role=main]", "#main-content", "#content", "article",
+]
+# A candidate must hold at least this share of the page text (or 1500
+# chars) to be picked; this stops a small <article> teaser being taken for
+# the whole page.
+_MAIN_MIN_SHARE = 0.25
+_MAIN_MIN_CHARS = 1500
+
+_PLACEHOLDER = "ACGBLOCK{:05d}X"
+_PLACEHOLDER_RE = re.compile(r"ACGBLOCK(\d{5})X")
+
+
+def _text_len(el: Tag) -> int:
+    return len(el.get_text(" ", strip=True))
+
+
+def _select_main_content(soup: BeautifulSoup) -> Tag:
+    """Pick the element that holds the page's main content.
+
+    Falls back to <body> (or the whole document) when no container holds a
+    meaningful share of the text.
+    """
+    body = soup.body or soup
+    total = _text_len(body)
+    if total == 0:
+        return body
+    for selector in _MAIN_SELECTORS:
+        for el in soup.select(selector):
+            length = _text_len(el)
+            if length >= _MAIN_MIN_CHARS or length >= total * _MAIN_MIN_SHARE:
+                # Only accept a single obvious container; several equal
+                # <article>s (e.g. a blog index) means "use the body".
+                if selector == "article" and len(soup.select("article")) > 1:
+                    break
+                return el
+    return body
+
+
 def extract_text_from_html(html: str) -> str:
-    """Extract readable text from HTML using BeautifulSoup + lxml (fallback to html.parser).
+    """Extract the main readable text from HTML.
+
+    1. Drop scripts/styles/forms and page furniture (nav, footer, aside,
+       ARIA banners, hidden and screen-reader-only text).
+    2. Keep only the main content container (``<main>``, ``<article>``,
+       GitHub's README, ...) when one is present.
+    3. Replace tables and code blocks with placeholders *in place*, so they
+       stay next to the prose that explains them, then render the rest with
+       html2text and substitute the table rows / ``[CODE]:`` blocks back.
+    4. Drop exact duplicate paragraphs (repeated sidebars, banners).
+
+    Args:
+        html: Raw HTML content.
+
+    Returns:
+        Clean extracted text content.
+    """
+    soup = BeautifulSoup(html, "lxml")
+
+    for tag in soup(_DROP_TAGS):
+        tag.decompose()
+    for tag in soup(_FURNITURE_TAGS):
+        tag.decompose()
+    for selector in _FURNITURE_SELECTORS:
+        for tag in soup.select(selector):
+            tag.decompose()
+
+    root = _select_main_content(soup)
+    if root is (soup.body or soup):
+        # No main container: drop site-level headers (logo, menus) but keep
+        # headers inside <main>/<article> (titles).
+        for header in soup.find_all("header"):
+            if not header.find_parent(["main", "article"]):
+                header.decompose()
+
+    blocks: list[str] = []
+
+    def _placeholder(el: Tag, text: str) -> None:
+        marker = soup.new_tag("p")
+        marker.string = _PLACEHOLDER.format(len(blocks))
+        blocks.append(text)
+        el.replace_with(marker)
+
+    # Tables -> "a | b | c" rows, one paragraph per row (kept in place).
+    for table in root.find_all("table"):
+        if table.find_parent("table"):
+            continue
+        table_text = _extract_table(table)
+        if table_text.strip():
+            _placeholder(table, "\n\n".join(table_text.splitlines()))
+        else:
+            table.decompose()
+
+    # Code blocks -> one "[CODE]: ..." paragraph each (kept in place).
+    # Inline <code> inside prose is left alone so identifiers stay in the
+    # sentence that uses them.
+    for pre in root.find_all("pre"):
+        code_text = re.sub(r"\s+", " ", pre.get_text(" ")).strip()
+        if code_text:
+            _placeholder(pre, f"[CODE]: {code_text}")
+        else:
+            pre.decompose()
+
+    try:
+        import html2text
+
+        h = html2text.HTML2Text()
+        h.body_width = 0  # No line wrapping
+        h.ignore_links = True  # link URLs are noise for search and claims
+        h.ignore_images = True
+        h.ignore_emphasis = True
+        h.unicode_snob = True
+        full_text = h.handle(str(root))
+    except ImportError:
+        full_text = root.get_text(separator="\n\n", strip=True)
+
+    full_text = _PLACEHOLDER_RE.sub(lambda m: blocks[int(m.group(1))], full_text)
+
+    # Decode common HTML entities
+    full_text = (
+        full_text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+    )
+
+    # Collapse excessive whitespace (but keep paragraph breaks)
+    full_text = re.sub(r"[ \t]+", " ", full_text)
+    full_text = re.sub(r"\n{4,}", "\n\n\n", full_text)
+
+    return _dedupe_paragraphs(full_text).strip()
+
+
+def _dedupe_paragraphs(text: str) -> str:
+    """Drop paragraphs that repeat an earlier one verbatim (modulo case/space).
+
+    Table rows are exempt: identical rows can be meaningful.
+    """
+    seen: set[str] = set()
+    kept = []
+    for para in re.split(r"\n\n+", text):
+        key = re.sub(r"\s+", " ", para).strip().lower()
+        if not key:
+            continue
+        is_table_row = key.count("|") >= 2
+        if key in seen and not is_table_row:
+            continue
+        seen.add(key)
+        kept.append(para.strip())
+    return "\n\n".join(kept)
+
+
+def _extract_text_legacy(html: str) -> str:
+    """Extractor v1 — kept unchanged so sources indexed with it still verify.
+
+    The verifier re-extracts a page and checks its SHI against the hash
+    stored at indexing time, so a source must be re-extracted with the same
+    extractor it was indexed with. New sources use ``extract_text_from_html``.
+
+    Original description: extract readable text from HTML using BeautifulSoup + lxml.
 
     Multi-pass extraction:
     1. Extract tables as structured text rows
@@ -304,6 +492,11 @@ def split_into_sentences(text: str) -> list[str]:
         if not para:
             continue
 
+        # Code blocks are atomic: never split code on ". "
+        if para.startswith("[CODE]:"):
+            sentences.append(para)
+            continue
+
         # If it looks like a table row (contains | ), keep as one segment
         if "|" in para and para.count("|") >= 2:
             sentences.append(para)
@@ -359,7 +552,7 @@ def group_into_chunks(sentences: list[str], sentences_per_chunk: int = 8) -> lis
     table_rows = []
 
     for sentence in sentences:
-        is_table_row = "|" in sentence and sentence.count("|") >= 2
+        is_table_row = sentence.count("|") >= 2 and not sentence.startswith("[CODE]:")
         is_list_item = bool(re.match(r"^[\s]*[-*•·]\s", sentence))
 
         # --- Table handling: keep all rows of a table together ---
@@ -488,17 +681,19 @@ def index_url(url: str, sentences_per_chunk: int = 8) -> dict:
         }
         indexed_chunks.append(chunk_entry)
 
-    # Store source metadata in 'sources' collection
+    # Store chunks with embeddings in 'data' collection first, then the
+    # source document. Searches treat the source document as the commit
+    # marker, so they never cache a half-written source.
+    save_data_chunks(url_hash, indexed_chunks)
+
     source_data = {
         "url": url,
         "shi_prefix": shi_prefix,
         "total_chunks": len(chunks),
         "full_text_length": len(text),
+        "extractor_version": EXTRACTOR_VERSION,
     }
     save_source(url_hash, source_data)
-
-    # Store chunks with embeddings in 'data' collection
-    save_data_chunks(url_hash, indexed_chunks)
 
     return {
         "url": url,

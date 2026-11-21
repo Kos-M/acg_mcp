@@ -55,7 +55,7 @@ MONGO_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/acg_protocol?ret
 
 | Tool | Description |
 |------|-------------|
-| `acg_check_indexed` | **CALL FIRST.** Returns confidence 0-1 + tier (HIGH/MEDIUM/LOW) for a query |
+| `acg_check_indexed` | **CALL FIRST.** Returns confidence 0-1, tier (HIGH/MEDIUM/LOW), answerable and an instruction for a query |
 | `acg_index_url` | Index a URL — fetches, extracts text, chunks by sentences, generates SHI + CSS selectors, embeds, stores in MongoDB |
 | `acg_search_sources` | Semantic (vector) + keyword search across indexed content |
 | `acg_list_sources` | List all indexed sources with metadata |
@@ -72,13 +72,13 @@ MONGO_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/acg_protocol?ret
 ```
 User Query → acg_check_indexed(query) FIRST
   ├── HIGH (≥0.7) → Answer from indexed. NO web_fetch.
-  ├── MEDIUM (≥0.4) → Indexed as primary. Supplement only if gaps.
-  └── LOW (<0.4) → web_fetch(url) → acg_index_url(url) → Answer with SHI markers
+  ├── MEDIUM (≥0.5) → Partial coverage. Answer what the matches support; web_fetch + index the gaps.
+  └── LOW (<0.5, answerable=false) → matches are off-topic. web_fetch(url) → acg_index_url(url) → Answer with SHI markers
 ```
 
 **CRITICAL RULES:**
 1. ALWAYS call `acg_check_indexed()` BEFORE `web_fetch()`
-2. HIGH/MEDIUM confidence → answer from indexed sources. Do NOT call web_fetch.
+2. HIGH confidence → answer from indexed sources. Do NOT call web_fetch. MEDIUM → use indexed sources for what they cover, web_fetch only the gaps. Always follow the returned `instruction`.
 3. LOW confidence → web_fetch → MUST `acg_index_url()` immediately after
 4. Formatting artifacts (HTML entities, whitespace) in indexed text do NOT invalidate factual content
 
@@ -133,7 +133,7 @@ Every ACG-grounded response MUST end with:
 1. ❌ Calling `web_fetch()` before `acg_check_indexed()`
 2. ❌ Forgetting to call `acg_index_url()` after `web_fetch()`
 3. ❌ Treating LOW confidence as "no answer" — always check if indexed sources partially match
-4. ❌ Ignoring MEDIUM confidence — indexed sources ARE correct, answer from them
+4. ❌ Ignoring HIGH confidence and calling web_fetch anyway — answer from indexed sources
 5. ❌ **Assuming you already know the docs** — always verify with ACG MCP before writing code that depends on external tools
 6. ❌ Not verifying claims after generation
 7. ❌ Not appending the response signature

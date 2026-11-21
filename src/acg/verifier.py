@@ -30,7 +30,7 @@ from typing import Optional
 from src.acg.ugvp import CLAIM_MARKER_PATTERN
 from src.acg.rsvp import RELATIONSHIP_MARKER_PATTERN
 from src.acg.shi import verify_shi
-from src.acg.indexer import fetch_url, extract_text_from_html
+from src.acg.indexer import fetch_url, extract_text_for_source
 from src.acg.db import get_source, get_chunk_window, save_claim, _STOPWORDS
 
 
@@ -280,7 +280,7 @@ def verify_claims(text: str) -> dict:
 
         try:
             html = fetch_url(source_entry["url"])
-            source_text = extract_text_from_html(html)
+            source_text = extract_text_for_source(html, source_entry.get("extractor_version"))
             shi_valid = verify_shi(source_text, shi_prefix)
 
             chunk_text, window_text, reason = _resolve_chunk(source_entry, css_selector)

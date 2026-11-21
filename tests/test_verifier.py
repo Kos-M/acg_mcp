@@ -182,7 +182,7 @@ def mocked_io(monkeypatch):
     ))
     monkeypatch.setattr(verifier, "get_chunk_window", fake_window)
     monkeypatch.setattr(verifier, "fetch_url", lambda url: "<html></html>")
-    monkeypatch.setattr(verifier, "extract_text_from_html", lambda html: PAGE_TITLE + "\n" + QWEN_CHUNK)
+    monkeypatch.setattr(verifier, "extract_text_for_source", lambda html, version: PAGE_TITLE + "\n" + QWEN_CHUNK)
     monkeypatch.setattr(verifier, "verify_shi", lambda text, shi: True)
     monkeypatch.setattr(verifier, "save_claim", lambda d: saved.append(d) or True)
     return saved
